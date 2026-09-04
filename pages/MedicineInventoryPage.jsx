@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
+import { clinicApi } from '../src/api/clinicApi'
 import { defaultMedicineInventory } from '../src/data/constants'
 import Sidebar from '../src/components/Sidebar'
 import Topbar from '../src/components/Topbar'
@@ -8,7 +9,25 @@ import Icon from '../src/components/Icon'
 const emptyMedicineForm = {
   name: '',
   quantity: '',
+  image: '',
+  description: '',
+  category: '',
 }
+
+const MAX_IMAGE_SIZE = 2 * 1024 * 1024
+const medicineCategoryOptions = [
+  'Fever and pain relief',
+  'Colds and fever',
+  'Flu and colds',
+  'Pain and fever',
+  'Pain, fever, and inflammation',
+  'Pain relief',
+  'Allergy',
+  'Stomach and acidity',
+  'Wound care',
+  'Disinfectant',
+  'General medicine',
+]
 
 function getStatus(quantity) {
   if (quantity <= 0) return 'out'
@@ -16,38 +35,88 @@ function getStatus(quantity) {
   return 'in'
 }
 
+function getDefaultImage(name) {
+  return defaultMedicineInventory.find(
+    (medicine) => medicine.name.toLowerCase() === String(name).toLowerCase()
+  )?.image || defaultMedicineInventory[0]?.image || ''
+}
+
+function getDefaultDescription(name) {
+  return defaultMedicineInventory.find(
+    (medicine) => medicine.name.toLowerCase() === String(name).toLowerCase()
+  )?.description || ''
+}
+
+function getDefaultCategory(name) {
+  return defaultMedicineInventory.find(
+    (medicine) => medicine.name.toLowerCase() === String(name).toLowerCase()
+  )?.category || 'General medicine'
+}
+
+function normalizeMedicine(medicine) {
+  return {
+    ...medicine,
+    image: medicine.image || getDefaultImage(medicine.name),
+    description: medicine.description || getDefaultDescription(medicine.name),
+    category: medicine.category || getDefaultCategory(medicine.name),
+  }
+}
+
 export default function MedicineInventoryPage({ onSignOut, onNavigate }) {
   const [activeNav, setActiveNav] = useState('Medicine Inventory')
   const [notice, setNotice] = useState('')
   const [query, setQuery] = useState('')
+  const [selectedCategory, setSelectedCategory] = useState('')
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState(null)
+  const [selectedMedicineName, setSelectedMedicineName] = useState('')
   const [form, setForm] = useState(emptyMedicineForm)
 
-  // Inventory from localStorage
-  const [medicines, setMedicines] = useState(() => {
-    try {
-      const saved = localStorage.getItem('medicines')
-      if (saved) return JSON.parse(saved)
-      // Seed defaults on first run
-      const seeded = defaultMedicineInventory
-      localStorage.setItem('medicines', JSON.stringify(seeded))
-      return seeded
-    } catch {
-      return defaultMedicineInventory
-    }
-  })
+  const [medicines, setMedicines] = useState([])
 
-  // Save inventory to localStorage whenever it changes
   useEffect(() => {
-    localStorage.setItem('medicines', JSON.stringify(medicines))
+    let ignore = false
+
+    async function loadMedicines() {
+      try {
+        const { data } = await clinicApi.getMedicines()
+        if (!ignore) setMedicines(data.map(normalizeMedicine))
+      } catch (error) {
+        if (!ignore) setNotice(error.message || 'Unable to load medicines.')
+      }
+    }
+
+    loadMedicines()
+    return () => {
+      ignore = true
+    }
+  }, [])
+
+  const categories = useMemo(() => {
+    return [...new Set(medicines.map((medicine) => medicine.category || getDefaultCategory(medicine.name)))]
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))
+  }, [medicines])
+
+  const categoryCounts = useMemo(() => {
+    return medicines.reduce((counts, medicine) => {
+      const category = medicine.category || getDefaultCategory(medicine.name)
+      counts[category] = (counts[category] || 0) + 1
+      return counts
+    }, {})
   }, [medicines])
 
   const filteredMedicines = useMemo(() => {
-    if (!query.trim()) return medicines
     const q = query.toLowerCase()
-    return medicines.filter((m) => (m.name || '').toLowerCase().includes(q))
-  }, [medicines, query])
+    return medicines.filter((m) =>
+      (!selectedCategory || (m.category || getDefaultCategory(m.name)) === selectedCategory) &&
+      (!q.trim() ||
+        [m.name, m.category, m.description].some((value) =>
+          String(value || '').toLowerCase().includes(q)
+        )
+      )
+    )
+  }, [medicines, query, selectedCategory])
 
   const stats = useMemo(() => {
     const totalUnits = medicines.reduce((sum, m) => sum + (Number(m.quantity) || 0), 0)
@@ -58,6 +127,11 @@ export default function MedicineInventoryPage({ onSignOut, onNavigate }) {
     }).length
     return { total: medicines.length, totalUnits, outOfStock, lowStock }
   }, [medicines])
+
+  const selectedMedicine = useMemo(
+    () => medicines.find((medicine) => medicine.name === selectedMedicineName),
+    [medicines, selectedMedicineName]
+  )
 
   const handleNavSelect = useCallback(
     (item) => {
@@ -76,8 +150,15 @@ export default function MedicineInventoryPage({ onSignOut, onNavigate }) {
   }, [])
 
   const openEditModal = useCallback((medicine) => {
-    setForm({ name: medicine.name, quantity: String(medicine.quantity) })
+    setForm({
+      name: medicine.name,
+      quantity: String(medicine.quantity),
+      image: medicine.image || getDefaultImage(medicine.name),
+      description: medicine.description || getDefaultDescription(medicine.name),
+      category: medicine.category || getDefaultCategory(medicine.name),
+    })
     setEditing(medicine)
+    setSelectedMedicineName('')
     setShowModal(true)
   }, [])
 
@@ -87,63 +168,104 @@ export default function MedicineInventoryPage({ onSignOut, onNavigate }) {
     setForm(emptyMedicineForm)
   }, [])
 
+  const closeMedicineDetail = useCallback(() => {
+    setSelectedMedicineName('')
+  }, [])
+
   const handleSubmit = useCallback(
-    (e) => {
+    async (e) => {
       e.preventDefault()
       const name = form.name.trim()
       const quantity = Math.max(0, Number(form.quantity) || 0)
+      const description = form.description.trim()
+      const category = form.category.trim() || getDefaultCategory(name)
+      const image = form.image || getDefaultImage(name)
 
       if (!name) {
         setNotice('Please enter a medicine name.')
         return
       }
 
-      if (editing) {
-        setMedicines((prev) =>
-          prev.map((m) =>
-            m.name === editing.name ? { name, quantity } : m
-          )
-        )
-        setNotice(`${name}'s stock has been updated.`)
-      } else {
-        const exists = medicines.some(
-          (m) => m.name.toLowerCase() === name.toLowerCase()
-        )
-        if (exists) {
-          setNotice('That medicine is already in the inventory.')
-          return
-        }
-        setMedicines((prev) => [{ name, quantity }, ...prev])
-        setNotice(`${name} has been added to the inventory.`)
-      }
+      try {
+        const payload = { name, quantity, image, description, category }
 
-      closeModal()
+        if (editing) {
+          const { data } = await clinicApi.updateMedicine(editing.id, payload)
+          const nextMedicine = normalizeMedicine(data)
+          setMedicines((prev) =>
+            prev.map((m) => (m.id === nextMedicine.id ? nextMedicine : m))
+          )
+          setSelectedMedicineName((current) => (current === editing.name ? nextMedicine.name : current))
+          setNotice(`${nextMedicine.name}'s stock has been updated.`)
+        } else {
+          const { data } = await clinicApi.createMedicine(payload)
+          const nextMedicine = normalizeMedicine(data)
+          setMedicines((prev) => [nextMedicine, ...prev])
+          setNotice(`${nextMedicine.name} has been added to the inventory.`)
+        }
+
+        closeModal()
+      } catch (error) {
+        setNotice(error.message || 'Unable to save medicine.')
+      }
     },
-    [closeModal, editing, form, medicines]
+    [closeModal, editing, form]
   )
 
+  const handleImageChange = useCallback((e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    if (!file.type.startsWith('image/')) {
+      setNotice('Please choose an image file.')
+      e.target.value = ''
+      return
+    }
+
+    if (file.size > MAX_IMAGE_SIZE) {
+      setNotice('Please choose an image smaller than 2 MB.')
+      e.target.value = ''
+      return
+    }
+
+    const reader = new FileReader()
+    reader.onload = () => {
+      setForm((current) => ({ ...current, image: String(reader.result || '') }))
+    }
+    reader.onerror = () => setNotice('The image could not be loaded.')
+    reader.readAsDataURL(file)
+  }, [])
+
   const handleDelete = useCallback(
-    (medicine) => {
+    async (medicine) => {
       const confirmed = window.confirm(
         `Are you sure you want to remove "${medicine.name}" from the inventory?`
       )
       if (!confirmed) return
 
-      setMedicines((prev) => prev.filter((m) => m.name !== medicine.name))
-      setNotice(`${medicine.name} has been removed from the inventory.`)
+      try {
+        await clinicApi.deleteMedicine(medicine.id)
+        setMedicines((prev) => prev.filter((m) => m.id !== medicine.id))
+        setSelectedMedicineName((current) => (current === medicine.name ? '' : current))
+        setNotice(`${medicine.name} has been removed from the inventory.`)
+      } catch (error) {
+        setNotice(error.message || 'Unable to remove medicine.')
+      }
     },
     []
   )
 
   const handleAdjust = useCallback(
-    (medicine, delta) => {
-      setMedicines((prev) =>
-        prev.map((m) =>
-          m.name === medicine.name
-            ? { ...m, quantity: Math.max(0, (Number(m.quantity) || 0) + delta) }
-            : m
+    async (medicine, delta) => {
+      try {
+        const { data } = await clinicApi.adjustMedicine(medicine.id, delta)
+        const nextMedicine = normalizeMedicine(data)
+        setMedicines((prev) =>
+          prev.map((m) => (m.id === nextMedicine.id ? nextMedicine : m))
         )
-      )
+      } catch (error) {
+        setNotice(error.message || 'Unable to update stock.')
+      }
     },
     []
   )
@@ -158,6 +280,7 @@ export default function MedicineInventoryPage({ onSignOut, onNavigate }) {
           onQueryChange={setQuery}
           onNotification={setNoticeSafe}
           onProfile={() => handleNavSelect('Nurse Profile')}
+          searchPlaceholder="Search medicine"
         />
 
         <Toast message={notice} onClose={() => setNotice('')} />
@@ -210,13 +333,35 @@ export default function MedicineInventoryPage({ onSignOut, onNavigate }) {
           </section>
         )}
 
+        {medicines.length > 0 && (
+          <div className="history-filters">
+            <div className="segmented">
+              <button
+                className={selectedCategory === '' ? 'selected' : ''}
+                onClick={() => setSelectedCategory('')}
+              >
+                All ({medicines.length})
+              </button>
+              {categories.map((category) => (
+                <button
+                  key={category}
+                  className={selectedCategory === category ? 'selected' : ''}
+                  onClick={() => setSelectedCategory(category)}
+                >
+                  {category} ({categoryCounts[category] || 0})
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         <section className="history-panel panel" style={{ marginTop: '18px' }}>
           <div className="panel-heading">
             <div>
               <p className="panel-label green-text"><Icon name="inventory" /> STOCK LEVELS</p>
               <h3>
-                {query
-                  ? `Search results (${filteredMedicines.length})`
+                {query || selectedCategory
+                  ? `Filtered medicines (${filteredMedicines.length})`
                   : `All medicines (${medicines.length})`}
               </h3>
             </div>
@@ -228,7 +373,7 @@ export default function MedicineInventoryPage({ onSignOut, onNavigate }) {
             </p>
           ) : filteredMedicines.length === 0 ? (
             <p className="empty-state" style={{ marginTop: '32px' }}>
-              No medicines match your search for "{query}".
+              No medicines match the selected category or search.
             </p>
           ) : (
             <div className="history-table-wrap">
@@ -236,6 +381,7 @@ export default function MedicineInventoryPage({ onSignOut, onNavigate }) {
                 <thead>
                   <tr>
                     <th>Medicine</th>
+                    <th>Category</th>
                     <th>Available stock</th>
                     <th>Status</th>
                     <th>Actions</th>
@@ -248,15 +394,29 @@ export default function MedicineInventoryPage({ onSignOut, onNavigate }) {
                     return (
                       <tr key={medicine.name}>
                         <td>
-                          <div className="history-student">
+                          <button
+                            type="button"
+                            className="history-student medicine-open-button"
+                            onClick={() => setSelectedMedicineName(medicine.name)}
+                            title={`View ${medicine.name}`}
+                          >
                             <span className="visit-avatar blue">
-                              <Icon name="inventory" />
+                              <img
+                                src={medicine.image || getDefaultImage(medicine.name)}
+                                alt=""
+                                className="medicine-thumb"
+                              />
                             </span>
                             <div>
                               <strong>{medicine.name}</strong>
-                              <small>Medicine stock</small>
+                              <small>{medicine.description || 'No use description added yet.'}</small>
                             </div>
-                          </div>
+                          </button>
+                        </td>
+                        <td>
+                          <span className="medicine-category-pill">
+                            {medicine.category || getDefaultCategory(medicine.name)}
+                          </span>
                         </td>
                         <td>
                           <strong style={{ color: '#294366' }}>{quantity}</strong>{' '}
@@ -279,7 +439,7 @@ export default function MedicineInventoryPage({ onSignOut, onNavigate }) {
                               : 'In stock'}
                           </span>
                         </td>
-<td>
+                        <td>
                           <div className="table-actions">
                             <button onClick={() => handleAdjust(medicine, -1)} title="Decrease stock">
                               <Icon name="minus" />
@@ -338,6 +498,46 @@ export default function MedicineInventoryPage({ onSignOut, onNavigate }) {
                   placeholder="e.g. 10"
                 />
               </label>
+              <label className="form-field-full">
+                Category
+                <input
+                  list="medicine-category-options"
+                  value={form.category}
+                  onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
+                  placeholder="e.g. Fever and pain relief"
+                />
+                <datalist id="medicine-category-options">
+                  {medicineCategoryOptions.map((category) => (
+                    <option key={category} value={category} />
+                  ))}
+                </datalist>
+              </label>
+              <label className="form-field-full">
+                Medicine picture
+                <div className="medicine-image-upload">
+                  <span className="medicine-preview">
+                    {form.image ? (
+                      <img src={form.image} alt="" />
+                    ) : (
+                      <Icon name="inventory" />
+                    )}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageChange}
+                  />
+                </div>
+              </label>
+              <label className="form-field-full">
+                What it is used for
+                <textarea
+                  value={form.description}
+                  onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+                  placeholder="e.g. Used for fever, headache, or mild body pain"
+                  rows="4"
+                />
+              </label>
               <div className="detail-actions form-field-full">
                 <button type="submit" className="primary-action">
                   <Icon name="plus" /> {editing ? 'Save changes' : 'Add medicine'}
@@ -347,6 +547,59 @@ export default function MedicineInventoryPage({ onSignOut, onNavigate }) {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {selectedMedicine && (
+        <div className="modal-backdrop" onClick={closeMedicineDetail}>
+          <div className="visit-modal medicine-detail-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="modal-close" onClick={closeMedicineDetail}>
+              <Icon name="close" />
+            </button>
+            <p className="section-kicker">MEDICINE DETAILS</p>
+            <div className="medicine-detail-hero">
+              <img
+                src={selectedMedicine.image || getDefaultImage(selectedMedicine.name)}
+                alt=""
+              />
+            </div>
+            <h2>{selectedMedicine.name}</h2>
+            <span className="medicine-detail-category">
+              {selectedMedicine.category || getDefaultCategory(selectedMedicine.name)}
+            </span>
+            <div className="medicine-detail-stats">
+              <span>
+                <small>Available stock</small>
+                <strong>{Number(selectedMedicine.quantity) || 0}</strong>
+              </span>
+              <span>
+                <small>Status</small>
+                <strong>
+                  {getStatus(Number(selectedMedicine.quantity) || 0) === 'out'
+                    ? 'Out of stock'
+                    : getStatus(Number(selectedMedicine.quantity) || 0) === 'low'
+                    ? 'Low stock'
+                    : 'In stock'}
+                </strong>
+              </span>
+            </div>
+            <div className="medicine-detail-description">
+              <small>Used for</small>
+              <p>{selectedMedicine.description || 'No use description added yet.'}</p>
+            </div>
+            <div className="detail-actions">
+              <button
+                type="button"
+                className="primary-action"
+                onClick={() => openEditModal(selectedMedicine)}
+              >
+                <Icon name="clipboard" /> Edit medicine
+              </button>
+              <button type="button" className="text-button" onClick={closeMedicineDetail}>
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

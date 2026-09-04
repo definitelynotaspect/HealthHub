@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { clinicApi } from '../src/api/clinicApi'
 import Icon from '../src/components/Icon.jsx'
 import icfLogo from '../src/assets/images/ICF_logo.png'
 
@@ -9,19 +10,19 @@ export default function LoginPage({ onLogin }) {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault()
     setError('')
     setLoading(true)
 
-    window.setTimeout(() => {
-      if (email.trim() === 'interworldcolleges@clinic.com' && password === 'password123') {
-        onLogin()
-      } else {
-        setError('Incorrect email or password. Try the demo credentials below.')
-      }
+    try {
+      const { user } = await clinicApi.login(email.trim(), password)
+      onLogin(user)
+    } catch (error) {
+      setError(error.message || 'Incorrect email or password. Try the demo credentials below.')
+    } finally {
       setLoading(false)
-    }, 350)
+    }
   }
 
   return (

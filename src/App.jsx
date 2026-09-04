@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { AUTH_EXPIRED_EVENT, clearSession, getToken } from './api/clinicApi'
 import LoginPage from '../pages/LoginPage.jsx'
 import DashboardPage from '../pages/DashboardPage.jsx'
 import ManageStudentsPage from '../pages/ManageStudentsPage.jsx'
@@ -6,10 +7,11 @@ import ConcernPage from '../pages/ConcernPage.jsx'
 import VisitHistoryPage from '../pages/VisitHistoryPage.jsx'
 import NurseProfilePage from '../pages/NurseProfilePage.jsx'
 import MedicineInventoryPage from '../pages/MedicineInventoryPage.jsx'
+import PersonalDataPage from '../pages/PersonalDataPage.jsx'
 
 function App() {
   const [signedIn, setSignedIn] = useState(() => {
-    return localStorage.getItem('signedIn') === 'true'
+    return Boolean(getToken())
   })
 
   const [page, setPage] = useState(() => {
@@ -17,15 +19,25 @@ function App() {
   })
 
   function handleLogin() {
-    localStorage.setItem('signedIn', 'true')
     setSignedIn(true)
   }
 
   function handleSignOut() {
-    localStorage.removeItem('signedIn')
+    clearSession()
     localStorage.removeItem('currentPage')
     setSignedIn(false)
   }
+
+  useEffect(() => {
+    function handleAuthExpired() {
+      localStorage.removeItem('currentPage')
+      setSignedIn(false)
+      setPage('Dashboard')
+    }
+
+    window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired)
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired)
+  }, [])
 
   function handleNavigate(pageName) {
     setPage(pageName)
@@ -41,8 +53,11 @@ function App() {
       {page === 'Dashboard' && (
         <DashboardPage onSignOut={handleSignOut} onNavigate={handleNavigate} />
       )}
-      {page === 'Students' && (
+      {page === 'Patients' && (
         <ManageStudentsPage onSignOut={handleSignOut} onNavigate={handleNavigate} />
+      )}
+      {page === 'Personal Data' && (
+        <PersonalDataPage onSignOut={handleSignOut} onNavigate={handleNavigate} />
       )}
       {page === 'Concern Page' && (
         <ConcernPage onSignOut={handleSignOut} onNavigate={handleNavigate} />

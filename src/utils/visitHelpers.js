@@ -24,6 +24,22 @@ export function buildDetail(course, yearLevel, section) {
  */
 export function formatVisitDate(dateString) {
   if (dateString) {
+    const exactLocal = String(dateString).match(
+      /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/
+    )
+    if (exactLocal && !/[zZ]$|[+-]\d{2}:?\d{2}$/.test(String(dateString))) {
+      const [, year, month, day, hour, minute, second = '00'] = exactLocal
+      const date = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second))
+      return date.toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      })
+    }
+
     const date = new Date(dateString)
     return date.toLocaleString('en-US', {
       month: 'short',
@@ -42,6 +58,45 @@ export function formatVisitDate(dateString) {
     minute: '2-digit',
     hour12: true,
   })
+}
+
+function padDatePart(value) {
+  return String(value).padStart(2, '0')
+}
+
+export function toLocalDateTimeInputValue(value) {
+  if (!value) return ''
+  const exactLocal = String(value).match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/)
+  if (exactLocal && !/[zZ]$|[+-]\d{2}:?\d{2}$/.test(String(value))) {
+    return `${exactLocal[1]}T${exactLocal[2]}`
+  }
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return [
+    date.getFullYear(),
+    padDatePart(date.getMonth() + 1),
+    padDatePart(date.getDate()),
+  ].join('-') + 'T' + [
+    padDatePart(date.getHours()),
+    padDatePart(date.getMinutes()),
+  ].join(':')
+}
+
+export function toLocalDateKey(value) {
+  if (!value) return ''
+  const exactLocal = String(value).match(/^(\d{4}-\d{2}-\d{2})[T ]/)
+  if (exactLocal && !/[zZ]$|[+-]\d{2}:?\d{2}$/.test(String(value))) {
+    return exactLocal[1]
+  }
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return [
+    date.getFullYear(),
+    padDatePart(date.getMonth() + 1),
+    padDatePart(date.getDate()),
+  ].join('-')
 }
 
 /**

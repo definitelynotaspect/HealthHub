@@ -1,9 +1,10 @@
 import { navItems } from '../data/constants'
 import Icon from './Icon'
 import icfLogo from '../assets/images/ICF_logo.png'
-import nurseCurt from '../assets/images/nurse-curt.jpg'
+import NurseAvatar from './NurseAvatar'
 
 export default function Sidebar({ activeNav, onNavSelect, onSignOut }) {
+
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -33,7 +34,7 @@ export default function Sidebar({ activeNav, onNavSelect, onSignOut }) {
           onClick={() => onNavSelect('Nurse Profile')}
           aria-label="Open nurse profile"
         >
-          <img className="staff-avatar" src={nurseCurt} alt="Nurse Curt Cuvin" />
+          <NurseAvatar className="staff-avatar" />
           <span>
             <strong>Curt Cuvin Gamurot</strong>
             <small>Clinic Nurse</small>

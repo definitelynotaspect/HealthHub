@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
+import { clinicApi } from '../src/api/clinicApi'
 import { formatVisitDate } from '../src/utils/visitHelpers'
 import Sidebar from '../src/components/Sidebar'
 import Topbar from '../src/components/Topbar'
@@ -55,19 +56,25 @@ export default function DashboardPage({ onSignOut, onNavigate }) {
   const [query, setQuery] = useState('')
   const [selectedMonth, setSelectedMonth] = useState(() => toMonthValue(new Date()))
   const [selectedWeek, setSelectedWeek] = useState(() => String(getWeekNumberForDate(new Date())))
-  const [visits, setVisits] = useState(() => {
-    try {
-      const saved = localStorage.getItem('visits')
-      return saved ? JSON.parse(saved) : []
-    } catch {
-      return []
-    }
-  })
+  const [visits, setVisits] = useState([])
 
-  // Save visits to localStorage whenever they change
   useEffect(() => {
-    localStorage.setItem('visits', JSON.stringify(visits))
-  }, [visits])
+    let ignore = false
+
+    async function loadVisits() {
+      try {
+        const { data } = await clinicApi.getVisits()
+        if (!ignore) setVisits(data)
+      } catch (error) {
+        if (!ignore) setNotice(error.message || 'Unable to load clinic visits.')
+      }
+    }
+
+    loadVisits()
+    return () => {
+      ignore = true
+    }
+  }, [])
 
   // Separate active (undischarged) and discharged visits
   const activeVisits = useMemo(
@@ -127,18 +134,16 @@ export default function DashboardPage({ onSignOut, onNavigate }) {
   }, [onNavigate])
 
   // Discharge a student (mark them as left the clinic)
-  const handleDischarge = useCallback((visitToDischarge) => {
-    const now = new Date().toISOString()
-    setVisits((current) =>
-      current.map((v) =>
-        v.name === visitToDischarge.name &&
-        v.timestamp === visitToDischarge.timestamp &&
-        v.concern === visitToDischarge.concern
-          ? { ...v, dischargedAt: now }
-          : v
+  const handleDischarge = useCallback(async (visitToDischarge) => {
+    try {
+      const { data } = await clinicApi.dischargeVisit(visitToDischarge.id)
+      setVisits((current) =>
+        current.map((visit) => (visit.id === data.id ? data : visit))
       )
-    )
-    setNotice(`${visitToDischarge.name} has been discharged from the clinic.`)
+      setNotice(`${visitToDischarge.name} has been discharged from the clinic.`)
+    } catch (error) {
+      setNotice(error.message || 'Unable to discharge this visit.')
+    }
   }, [])
 
   const setNoticeSafe = useCallback((msg) => setNotice(msg), [])
@@ -164,8 +169,8 @@ export default function DashboardPage({ onSignOut, onNavigate }) {
             <h2>School Clinic</h2>
             <p>Record and manage student clinic visits.</p>
           </div>
-          <button className="primary-action" onClick={() => handleNavSelect('Students')}>
-            <Icon name="students" /> Manage students
+          <button className="primary-action" onClick={() => handleNavSelect('Patients')}>
+            <Icon name="students" /> Manage patients
           </button>
         </section>
 
@@ -348,8 +353,8 @@ export default function DashboardPage({ onSignOut, onNavigate }) {
                 <p className="panel-label yellow-text">QUICK ACTIONS</p>
                 <h3>Manage clinic</h3>
                 <div className="quick-actions">
-                  <button onClick={() => handleNavSelect('Students')}>
-                    <Icon name="students" /><span>Find a<br />student</span>
+                  <button onClick={() => handleNavSelect('Patients')}>
+                    <Icon name="students" /><span>Find a<br />patient</span>
                   </button>
                   <button onClick={() => handleNavSelect('Visit history')}>
                     <Icon name="history" /><span>View visit<br />history</span>
@@ -399,7 +404,7 @@ export default function DashboardPage({ onSignOut, onNavigate }) {
                 </div>
               </div>
               <p className="empty-state" style={{ marginTop: '32px' }}>
-                No visits recorded yet. Go to <strong>Students</strong> to register a student and record a visit.
+                No visits recorded yet. Go to <strong>Patients</strong> to register a patient and record a visit.
               </p>
             </div>
 
@@ -407,8 +412,8 @@ export default function DashboardPage({ onSignOut, onNavigate }) {
               <p className="panel-label yellow-text">QUICK ACTIONS</p>
               <h3>Manage clinic</h3>
               <div className="quick-actions">
-                <button onClick={() => handleNavSelect('Students')}>
-                  <Icon name="students" /><span>Find a<br />student</span>
+                <button onClick={() => handleNavSelect('Patients')}>
+                  <Icon name="students" /><span>Find a<br />patient</span>
                 </button>
                 <button onClick={() => handleNavSelect('Visit history')}>
                   <Icon name="history" /><span>View visit<br />history</span>

@@ -1,17 +1,90 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
+import { clinicApi } from '../src/api/clinicApi'
 import Sidebar from '../src/components/Sidebar'
 import Topbar from '../src/components/Topbar'
 import Toast from '../src/components/Toast'
 import Icon from '../src/components/Icon'
-import { formatVisitDate, getInitials, getStatusTone } from '../src/utils/visitHelpers'
+import { formatVisitDate, getInitials, getStatusTone, toLocalDateTimeInputValue } from '../src/utils/visitHelpers'
 
-function toDateTimeInputValue(value) {
-  if (!value) return ''
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  const offset = date.getTimezoneOffset()
-  const localDate = new Date(date.getTime() - offset * 60000)
-  return localDate.toISOString().slice(0, 16)
+const positionOptions = [
+  { value: '', label: 'Select position' },
+  { value: 'Student', label: 'Student' },
+  { value: 'Staff', label: 'Staff' },
+  { value: 'Instructor', label: 'Instructor' },
+  { value: 'Guard', label: 'Guard' },
+  { value: 'Maintenance', label: 'Maintenance' },
+  { value: 'Admin', label: 'Admin' },
+]
+
+const departmentCourseOptions = {
+  'College of Information and Computer Studies': [
+    { value: 'ACT', label: 'ACT' },
+    { value: 'BSCS', label: 'BSCS' },
+  ],
+  'College of Education': [
+    { value: 'BEEd', label: 'BEEd' },
+    { value: 'BSEd', label: 'BSEd' },
+  ],
+  'College of Business and Accountancy': [
+    { value: 'BSA', label: 'BSA' },
+    { value: 'BSBA', label: 'BSBA' },
+  ],
+  'College of Criminal Justice Education': [
+    { value: 'BSCRIM', label: 'BSCRIM' },
+  ],
+  'College of Public Administration': [
+    { value: 'BSPA', label: 'BSPA' },
+  ],
+  'College of Hospitality and Tourism Management': [
+    { value: 'BSTM', label: 'BSTM' },
+  ],
+}
+
+const departmentOptions = [
+  { value: '', label: 'Select department' },
+  ...Object.keys(departmentCourseOptions).map((department) => ({
+    value: department,
+    label: department,
+  })),
+]
+
+const staffDepartmentOptions = [
+  ...departmentOptions,
+]
+
+const yearLevelOptions = [
+  { value: '', label: 'Select year' },
+  { value: '1st Year', label: '1st Year' },
+  { value: '2nd Year', label: '2nd Year' },
+  { value: '3rd Year', label: '3rd Year' },
+  { value: '4th Year', label: '4th Year' },
+]
+
+const twoYearCourseOptions = yearLevelOptions.filter(
+  (option) => !['3rd Year', '4th Year'].includes(option.value)
+)
+
+function getYearLevelOptions(course) {
+  return course === 'ACT' ? twoYearCourseOptions : yearLevelOptions
+}
+
+function getCourseOptions(department) {
+  return [
+    { value: '', label: 'Select course' },
+    ...(departmentCourseOptions[department] || []),
+  ]
+}
+
+function isStudentPosition(position) {
+  return !position || position === 'Student'
+}
+
+function isStaffPosition(position) {
+  return ['Staff', 'Instructor', 'Guard', 'Maintenance', 'Admin'].includes(position)
+}
+
+function isDepartmentlessStaffPosition(position) {
+  return ['Staff', 'Guard', 'Maintenance'].includes(position)
 }
 
 export default function ConcernPage({ onSignOut, onNavigate }) {
@@ -22,18 +95,25 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
   const [selectedVisit, setSelectedVisit] = useState(null)
   const [editVisit, setEditVisit] = useState(null)
 
-  const [visits, setVisits] = useState(() => {
-    try {
-      const saved = localStorage.getItem('visits')
-      return saved ? JSON.parse(saved) : []
-    } catch {
-      return []
-    }
-  })
+  const [visits, setVisits] = useState([])
 
   useEffect(() => {
-    localStorage.setItem('visits', JSON.stringify(visits))
-  }, [visits])
+    let ignore = false
+
+    async function loadVisits() {
+      try {
+        const { data } = await clinicApi.getVisits()
+        if (!ignore) setVisits(data)
+      } catch (error) {
+        if (!ignore) setNotice(error.message || 'Unable to load concerns.')
+      }
+    }
+
+    loadVisits()
+    return () => {
+      ignore = true
+    }
+  }, [])
 
   const handleNavSelect = useCallback(
     (item) => {
@@ -59,6 +139,9 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
         [
           visit.name,
           visit.studentId,
+          visit.employeeId,
+          visit.position,
+          visit.department,
           visit.course,
           visit.yearLevel,
           visit.section,
@@ -77,6 +160,7 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
     const patientNames = new Set()
     visits.forEach((visit) => {
       if (visit.studentId) patientIds.add(visit.studentId)
+      else if (visit.employeeId) patientIds.add(visit.employeeId)
       else if (visit.name) patientNames.add(visit.name.toLowerCase())
     })
 
@@ -88,28 +172,20 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
     }
   }, [visits, concerns])
 
-  const updateMatchingVisit = useCallback((targetVisit, updater) => {
-    setVisits((current) =>
-      current.map((visit) =>
-        visit.name === targetVisit.name &&
-        visit.timestamp === targetVisit.timestamp &&
-        visit.concern === targetVisit.concern
-          ? updater(visit)
-          : visit
-      )
-    )
-  }, [])
-
   const handleDischarge = useCallback(
-    (visit) => {
-      updateMatchingVisit(visit, (current) => ({
-        ...current,
-        dischargedAt: current.dischargedAt || new Date().toISOString(),
-      }))
-      setSelectedVisit(null)
-      setNotice(`${visit.name} has been timed out from the clinic.`)
+    async (visit) => {
+      try {
+        const { data } = await clinicApi.dischargeVisit(visit.id)
+        setVisits((current) =>
+          current.map((item) => (item.id === data.id ? data : item))
+        )
+        setSelectedVisit(null)
+        setNotice(`${visit.name} has been timed out from the clinic.`)
+      } catch (error) {
+        setNotice(error.message || 'Unable to time out this visit.')
+      }
     },
-    [updateMatchingVisit]
+    []
   )
 
   const openUpdateVisit = useCallback((visit) => {
@@ -117,31 +193,40 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
     setEditVisit({
       ...visit,
       name: visit.name || '',
+      position: visit.position || 'Student',
+      department: visit.department || '',
       studentId: visit.studentId || '',
+      employeeId: visit.employeeId || '',
       course: visit.course || '',
       yearLevel: visit.yearLevel || '',
       section: visit.section || '',
       concern: visit.concern || 'General check-up',
-      visitDateTime: toDateTimeInputValue(visit.visitDateTime),
-      dischargedAt: toDateTimeInputValue(visit.dischargedAt),
+      visitDateTime: toLocalDateTimeInputValue(visit.visitDateTime),
+      dischargedAt: toLocalDateTimeInputValue(visit.dischargedAt),
     })
   }, [])
 
   const handleUpdateVisit = useCallback(
-    (e) => {
+    async (e) => {
       e.preventDefault()
       if (!selectedVisit || !editVisit) return
 
+      const position = editVisit.position || 'Student'
+      const isStudent = isStudentPosition(position)
       const nextVisit = {
         ...selectedVisit,
         name: editVisit.name.trim(),
-        studentId: editVisit.studentId.trim(),
-        course: editVisit.course.trim(),
-        yearLevel: editVisit.yearLevel,
-        section: editVisit.section.trim(),
+        position,
+        department: editVisit.department || '',
+        studentId: isStudent ? editVisit.studentId.trim() : '',
+        employeeId: isStaffPosition(position) ? editVisit.employeeId.trim() : '',
+        course: isStudent ? editVisit.course || '' : '',
+        yearLevel: isStudent ? editVisit.yearLevel || '' : '',
+        section: isStudent ? editVisit.section.trim() : '',
         concern: editVisit.concern.trim() || 'General check-up',
         visitDateTime: editVisit.visitDateTime || selectedVisit.visitDateTime,
         dischargedAt: editVisit.dischargedAt || null,
+        medicines: selectedVisit.medicines || [],
         initials: getInitials(editVisit.name.trim()),
       }
 
@@ -150,40 +235,19 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
         return
       }
 
-      updateMatchingVisit(selectedVisit, () => nextVisit)
-
       try {
-        const students = JSON.parse(localStorage.getItem('students') || '[]')
-        const existingIndex = students.findIndex((student) => student.studentId === selectedVisit.studentId)
-        const nextStudent = {
-          ...(existingIndex >= 0 ? students[existingIndex] : {}),
-          studentId: nextVisit.studentId,
-          name: nextVisit.name,
-          course: nextVisit.course,
-          yearLevel: nextVisit.yearLevel,
-          section: nextVisit.section,
-          contact: existingIndex >= 0 ? students[existingIndex].contact || '' : '',
-          address: existingIndex >= 0 ? students[existingIndex].address || '' : '',
-          registeredAt: existingIndex >= 0 ? students[existingIndex].registeredAt : nextVisit.visitDateTime,
-        }
-
-        if (nextStudent.studentId) {
-          if (existingIndex >= 0) students[existingIndex] = nextStudent
-          else students.unshift(nextStudent)
-          localStorage.setItem('students', JSON.stringify(students))
-        }
-      } catch {
-        setNotice('Concern updated, but student list could not be synced.')
+        const { data } = await clinicApi.updateVisit(selectedVisit.id, nextVisit)
+        setVisits((current) =>
+          current.map((visit) => (visit.id === data.id ? data : visit))
+        )
         setSelectedVisit(null)
         setEditVisit(null)
-        return
+        setNotice(`${data.name}'s concern has been updated.`)
+      } catch (error) {
+        setNotice(error.message || 'Unable to update concern.')
       }
-
-      setSelectedVisit(null)
-      setEditVisit(null)
-      setNotice(`${nextVisit.name}'s concern has been updated.`)
     },
-    [editVisit, selectedVisit, updateMatchingVisit]
+    [editVisit, selectedVisit]
   )
 
   const getAvatarTone = useCallback((visit) => getStatusTone(visit), [])
@@ -209,7 +273,7 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
             <h2>Concern Page</h2>
             <p>Review every patient concern and manage each clinic record.</p>
           </div>
-          <button className="primary-action" onClick={() => handleNavSelect('Students')}>
+          <button className="primary-action" onClick={() => handleNavSelect('Patients')}>
             <Icon name="plus" /> Register visit
           </button>
         </section>
@@ -221,7 +285,7 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
               <div>
                 <strong>{stats.patients}</strong>
                 <p>Total patients</p>
-                <small>Students with concern records</small>
+                <small>Visitors with concern records</small>
               </div>
             </div>
             <div className="stat-card red">
@@ -260,7 +324,7 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
               >
                 All ({visits.length})
               </button>
-              {concerns.slice(0, 6).map((concern) => (
+              {concerns.map((concern) => (
                 <button
                   key={concern}
                   className={selectedConcern === concern ? 'selected' : ''}
@@ -317,7 +381,9 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
                           <div>
                             <strong>{visit.name}</strong>
                             <small>
-                              {visit.studentId || 'No student ID'}
+                              {visit.position ? `${visit.position} · ` : ''}
+                              {visit.studentId || visit.employeeId || 'No ID'}
+                              {visit.department ? ` · ${visit.department}` : ''}
                               {visit.course ? ` · ${visit.course}` : ''}
                             </small>
                           </div>
@@ -377,7 +443,11 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
               </span>
               <div>
                 <h2>{editVisit.name}</h2>
-                <p className="detail-id">{editVisit.studentId || 'No student ID'}</p>
+                <p className="detail-id">
+                  {editVisit.position ? `${editVisit.position} · ` : ''}
+                  {editVisit.studentId || editVisit.employeeId || 'No ID'}
+                  {editVisit.department ? ` · ${editVisit.department}` : ''}
+                </p>
               </div>
             </div>
 
@@ -391,24 +461,145 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
                 />
               </label>
               <label>
-                Student ID
-                <input
-                  value={editVisit.studentId}
-                  onChange={(e) => setEditVisit((visit) => ({ ...visit, studentId: e.target.value }))}
-                />
+                Position
+                <select
+                  value={editVisit.position}
+                  onChange={(e) => {
+                    const position = e.target.value
+                    setEditVisit((visit) => ({
+                      ...visit,
+                      position,
+                      department: isDepartmentlessStaffPosition(position) ? '' : visit.department || '',
+                      employeeId: isStaffPosition(position) ? visit.employeeId : '',
+                      studentId: isStudentPosition(position) ? visit.studentId : '',
+                      course: isStudentPosition(position) ? visit.course : '',
+                      yearLevel: isStudentPosition(position) ? visit.yearLevel : '',
+                      section: isStudentPosition(position) ? visit.section : '',
+                    }))
+                  }}
+                >
+                  {positionOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
               </label>
+              {isStudentPosition(editVisit.position) && (
+                <label>
+                  Department
+                  <select
+                    value={editVisit.department}
+                    onChange={(e) => {
+                      const department = e.target.value
+                      setEditVisit((visit) => ({
+                        ...visit,
+                        department,
+                        course: departmentCourseOptions[department]?.some((option) => option.value === visit.course)
+                          ? visit.course
+                          : '',
+                        yearLevel: departmentCourseOptions[department]?.some((option) => option.value === visit.course)
+                          ? visit.yearLevel
+                          : '',
+                      }))
+                    }}
+                  >
+                    {departmentOptions.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {!isStudentPosition(editVisit.position) && !isDepartmentlessStaffPosition(editVisit.position) && (
+                <label>
+                  Department
+                  <select
+                    value={editVisit.department}
+                    onChange={(e) => setEditVisit((visit) => ({ ...visit, department: e.target.value }))}
+                  >
+                    {staffDepartmentOptions.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {isStudentPosition(editVisit.position) && (
+                <>
+                  <label>
+                    Course
+                    <select
+                      value={editVisit.course}
+                      onChange={(e) => {
+                        const course = e.target.value
+                        setEditVisit((visit) => ({
+                          ...visit,
+                          course,
+                          yearLevel:
+                            course === 'ACT' &&
+                            !twoYearCourseOptions.some((option) => option.value === visit.yearLevel)
+                              ? ''
+                              : visit.yearLevel,
+                        }))
+                      }}
+                    >
+                      {getCourseOptions(editVisit.department).map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Student ID
+                    <input
+                      value={editVisit.studentId}
+                      onChange={(e) => setEditVisit((visit) => ({ ...visit, studentId: e.target.value }))}
+                      placeholder="e.g. ICF-2024-001"
+                    />
+                  </label>
+                  <label>
+                    Year level
+                    <select
+                      value={editVisit.yearLevel}
+                      onChange={(e) => setEditVisit((visit) => ({ ...visit, yearLevel: e.target.value }))}
+                    >
+                      {getYearLevelOptions(editVisit.course).map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Block / Section
+                    <input
+                      value={editVisit.section}
+                      onChange={(e) => setEditVisit((visit) => ({ ...visit, section: e.target.value }))}
+                      placeholder="e.g. A"
+                    />
+                  </label>
+                </>
+              )}
+              {!isStudentPosition(editVisit.position) && (
+                <label>
+                  Employee ID
+                  <input
+                    value={editVisit.employeeId}
+                    onChange={(e) => setEditVisit((visit) => ({ ...visit, employeeId: e.target.value }))}
+                    placeholder="e.g. EMP-2024-001"
+                  />
+                </label>
+              )}
               <label>
-                Course
-                <input
-                  value={editVisit.course}
-                  onChange={(e) => setEditVisit((visit) => ({ ...visit, course: e.target.value }))}
-                />
-              </label>
-              <label>
-                Concern
+                Concern / Reason
                 <input
                   value={editVisit.concern}
                   onChange={(e) => setEditVisit((visit) => ({ ...visit, concern: e.target.value }))}
+                  placeholder="e.g. Headache, fever, stomach pain"
                 />
               </label>
               <label>
@@ -427,7 +618,7 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
                   onChange={(e) => setEditVisit((visit) => ({ ...visit, dischargedAt: e.target.value }))}
                 />
               </label>
-              <button type="submit" className="primary-action" style={{ gridColumn: '1 / -1', justifyContent: 'center' }}>
+              <button type="submit" className="primary-action form-submit">
                 <Icon name="clipboard" /> Update concern
               </button>
             </form>

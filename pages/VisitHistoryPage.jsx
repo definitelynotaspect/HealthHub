@@ -1,45 +1,99 @@
-import { Fragment, useState, useMemo, useCallback } from 'react'
+import { Fragment, useState, useMemo, useCallback, useEffect } from 'react'
+import { clinicApi } from '../src/api/clinicApi'
 import Sidebar from '../src/components/Sidebar'
 import Topbar from '../src/components/Topbar'
 import Toast from '../src/components/Toast'
 import Icon from '../src/components/Icon'
-import { formatVisitDate, getInitials, getStatusTone } from '../src/utils/visitHelpers'
+import { formatVisitDate, getInitials, getStatusTone, toLocalDateKey, toLocalDateTimeInputValue } from '../src/utils/visitHelpers'
 
-function toDateTimeInputValue(value) {
-  if (!value) return ''
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  const offset = date.getTimezoneOffset()
-  const localDate = new Date(date.getTime() - offset * 60000)
-  return localDate.toISOString().slice(0, 16)
+const positionOptions = [
+  { value: '', label: 'Select position' },
+  { value: 'Student', label: 'Student' },
+  { value: 'Staff', label: 'Staff' },
+  { value: 'Instructor', label: 'Instructor' },
+  { value: 'Guard', label: 'Guard' },
+  { value: 'Maintenance', label: 'Maintenance' },
+  { value: 'Admin', label: 'Admin' },
+]
+
+const departmentCourseOptions = {
+  'College of Information and Computer Studies': [
+    { value: 'ACT', label: 'ACT' },
+    { value: 'BSCS', label: 'BSCS' },
+  ],
+  'College of Education': [
+    { value: 'BEEd', label: 'BEEd' },
+    { value: 'BSEd', label: 'BSEd' },
+  ],
+  'College of Business and Accountancy': [
+    { value: 'BSA', label: 'BSA' },
+    { value: 'BSBA', label: 'BSBA' },
+  ],
+  'College of Criminal Justice Education': [
+    { value: 'BSCRIM', label: 'BSCRIM' },
+  ],
+  'College of Public Administration': [
+    { value: 'BSPA', label: 'BSPA' },
+  ],
+  'College of Hospitality and Tourism Management': [
+    { value: 'BSTM', label: 'BSTM' },
+  ],
 }
 
-function isSameVisit(left, right) {
-  return (
-    left.name === right.name &&
-    left.timestamp === right.timestamp &&
-    left.concern === right.concern
-  )
+const departmentOptions = [
+  { value: '', label: 'Select department' },
+  ...Object.keys(departmentCourseOptions).map((department) => ({
+    value: department,
+    label: department,
+  })),
+]
+
+const staffDepartmentOptions = [
+  ...departmentOptions,
+]
+
+const yearLevelOptions = [
+  { value: '', label: 'Select year' },
+  { value: '1st Year', label: '1st Year' },
+  { value: '2nd Year', label: '2nd Year' },
+  { value: '3rd Year', label: '3rd Year' },
+  { value: '4th Year', label: '4th Year' },
+]
+
+const twoYearCourseOptions = yearLevelOptions.filter(
+  (option) => !['3rd Year', '4th Year'].includes(option.value)
+)
+
+function getYearLevelOptions(course) {
+  return course === 'ACT' ? twoYearCourseOptions : yearLevelOptions
 }
 
-function syncStudentsAfterVisitDelete(visitToDelete, remainingVisits) {
-  const studentId = visitToDelete.studentId
-  const studentName = visitToDelete.name
-  const hasRemainingVisit = remainingVisits.some((visit) => {
-    if (studentId) return visit.studentId === studentId
-    return !visit.studentId && visit.name === studentName
-  })
+function getCourseOptions(department) {
+  return [
+    { value: '', label: 'Select course' },
+    ...(departmentCourseOptions[department] || []),
+  ]
+}
 
-  if (hasRemainingVisit) return false
+function isStudentPosition(position) {
+  return !position || position === 'Student'
+}
 
-  const students = JSON.parse(localStorage.getItem('students') || '[]')
-  const updatedStudents = students.filter((student) => {
-    if (studentId) return student.studentId !== studentId
-    return student.name !== studentName
-  })
+function isStaffPosition(position) {
+  return ['Staff', 'Instructor', 'Guard', 'Maintenance', 'Admin'].includes(position)
+}
 
-  localStorage.setItem('students', JSON.stringify(updatedStudents))
-  return updatedStudents.length !== students.length
+function isDepartmentlessStaffPosition(position) {
+  return ['Staff', 'Guard', 'Maintenance'].includes(position)
+}
+
+function escapeExcelCell(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 }
 
 export default function VisitHistoryPage({ onSignOut, onNavigate }) {
@@ -49,14 +103,32 @@ export default function VisitHistoryPage({ onSignOut, onNavigate }) {
   const [selectedVisit, setSelectedVisit] = useState(null)
   const [editVisit, setEditVisit] = useState(null)
 
-  const [visits, setVisits] = useState(() => {
-    try {
-      const saved = localStorage.getItem('visits')
-      return saved ? JSON.parse(saved) : []
-    } catch {
-      return []
+  const [visits, setVisits] = useState([])
+  const [patientRecords, setPatientRecords] = useState([])
+
+  useEffect(() => {
+    let ignore = false
+
+    async function loadClinicData() {
+      try {
+        const [visitsResponse, recordsResponse] = await Promise.all([
+          clinicApi.getVisits(),
+          clinicApi.getPatientRecords(),
+        ])
+        if (!ignore) {
+          setVisits(visitsResponse.data)
+          setPatientRecords(recordsResponse.data)
+        }
+      } catch (error) {
+        if (!ignore) setNotice(error.message || 'Unable to load visit history.')
+      }
     }
-  })
+
+    loadClinicData()
+    return () => {
+      ignore = true
+    }
+  }, [])
 
   const handleNavSelect = useCallback(
     (item) => {
@@ -70,48 +142,52 @@ export default function VisitHistoryPage({ onSignOut, onNavigate }) {
 
   const openUpdateVisit = useCallback((visit) => {
     setSelectedVisit(visit)
-    setEditVisit({
+setEditVisit({
       ...visit,
       name: visit.name || '',
+      position: visit.position || 'Student',
+      department: visit.department || '',
       studentId: visit.studentId || '',
+      employeeId: visit.employeeId || '',
       course: visit.course || '',
+      yearLevel: visit.yearLevel || '',
+      section: visit.section || '',
       concern: visit.concern || 'General check-up',
-      visitDateTime: toDateTimeInputValue(visit.visitDateTime),
-      dischargedAt: toDateTimeInputValue(visit.dischargedAt),
+      visitDateTime: toLocalDateTimeInputValue(visit.visitDateTime),
+      dischargedAt: toLocalDateTimeInputValue(visit.dischargedAt),
     })
   }, [])
 
-  const handleDeleteVisit = useCallback((visitToDelete) => {
+  const handleDeleteVisit = useCallback(async (visitToDelete) => {
     const confirmed = window.confirm('Are you sure you want to remove this record?')
     if (!confirmed) return
 
-    const updated = visits.filter((visit) => !isSameVisit(visit, visitToDelete))
-
-    setVisits(updated)
-    localStorage.setItem('visits', JSON.stringify(updated))
-
     try {
-      const removedFromStudents = syncStudentsAfterVisitDelete(visitToDelete, updated)
-      setNotice(
-        removedFromStudents
-          ? `${visitToDelete.name}'s visit and student record have been removed.`
-          : `${visitToDelete.name}'s visit record has been removed.`
-      )
-    } catch {
-      setNotice('Visit removed, but the student list could not be synced.')
+      await clinicApi.deleteVisit(visitToDelete.id, { deleteOrphanPatient: true })
+      setVisits((current) => current.filter((visit) => visit.id !== visitToDelete.id))
+      setNotice(`${visitToDelete.name}'s visit record has been removed.`)
+    } catch (error) {
+      setNotice(error.message || 'Unable to remove this visit.')
     }
-  }, [visits])
+  }, [])
 
   const handleUpdateVisit = useCallback(
-    (e) => {
+    async (e) => {
       e.preventDefault()
       if (!selectedVisit || !editVisit) return
 
+const position = editVisit.position || 'Student'
+      const isStudent = isStudentPosition(position)
       const nextVisit = {
         ...selectedVisit,
         name: editVisit.name.trim(),
-        studentId: editVisit.studentId.trim(),
-        course: editVisit.course.trim(),
+        position,
+        department: editVisit.department || '',
+        studentId: isStudent ? editVisit.studentId.trim() : '',
+        employeeId: isStaffPosition(position) ? editVisit.employeeId.trim() : '',
+        course: isStudent ? editVisit.course || '' : '',
+        yearLevel: isStudent ? editVisit.yearLevel || '' : '',
+        section: isStudent ? editVisit.section.trim() : '',
         concern: editVisit.concern.trim() || 'General check-up',
         visitDateTime: editVisit.visitDateTime || selectedVisit.visitDateTime,
         dischargedAt: editVisit.dischargedAt || null,
@@ -119,57 +195,34 @@ export default function VisitHistoryPage({ onSignOut, onNavigate }) {
       }
 
       if (!nextVisit.name) {
-        setNotice('Please enter a student name.')
+        setNotice('Please enter a patient name.')
         return
       }
-
-      const updated = visits.map((visit) =>
-        isSameVisit(visit, selectedVisit) ? nextVisit : visit
-      )
-
-      setVisits(updated)
-      localStorage.setItem('visits', JSON.stringify(updated))
 
       try {
-        const students = JSON.parse(localStorage.getItem('students') || '[]')
-        const existingIndex = students.findIndex((student) => student.studentId === selectedVisit.studentId)
-        const nextStudent = {
-          ...(existingIndex >= 0 ? students[existingIndex] : {}),
-          studentId: nextVisit.studentId,
-          name: nextVisit.name,
-          course: nextVisit.course,
-          yearLevel: nextVisit.yearLevel || '',
-          section: nextVisit.section || '',
-          contact: existingIndex >= 0 ? students[existingIndex].contact || '' : '',
-          address: existingIndex >= 0 ? students[existingIndex].address || '' : '',
-          registeredAt: existingIndex >= 0 ? students[existingIndex].registeredAt : nextVisit.visitDateTime,
-        }
-
-        if (nextStudent.studentId) {
-          if (existingIndex >= 0) students[existingIndex] = nextStudent
-          else students.unshift(nextStudent)
-          localStorage.setItem('students', JSON.stringify(students))
-        }
-      } catch {
-        setNotice('Visit updated, but student list could not be synced.')
+        const { data } = await clinicApi.updateVisit(selectedVisit.id, {
+          ...nextVisit,
+          medicines: selectedVisit.medicines || [],
+        })
+        setVisits((current) =>
+          current.map((visit) => (visit.id === data.id ? data : visit))
+        )
         setSelectedVisit(null)
         setEditVisit(null)
-        return
+        setNotice(`${data.name}'s visit record has been updated.`)
+      } catch (error) {
+        setNotice(error.message || 'Unable to update this visit.')
       }
-
-      setSelectedVisit(null)
-      setEditVisit(null)
-      setNotice(`${nextVisit.name}'s visit record has been updated.`)
     },
-    [editVisit, selectedVisit, visits]
+    [editVisit, selectedVisit]
   )
 
   const filteredVisits = useMemo(() => {
     if (!query.trim()) return visits
 
     const q = query.toLowerCase()
-    return visits.filter((visit) =>
-      [visit.name, visit.studentId, visit.course, visit.concern, ...(visit.medicines || [])]
+return visits.filter((visit) =>
+      [visit.name, visit.studentId, visit.employeeId, visit.position, visit.department, visit.course, visit.concern, ...(visit.medicines || [])]
         .filter(Boolean)
         .some((value) => value.toLowerCase().includes(q))
     )
@@ -177,8 +230,8 @@ export default function VisitHistoryPage({ onSignOut, onNavigate }) {
 
   const orderedVisits = useMemo(() => {
     return [...filteredVisits].sort((a, b) => {
-      const left = new Date(a.visitDateTime || a.timestamp || a.dischargedAt || Date.now()).getTime()
-      const right = new Date(b.visitDateTime || b.timestamp || b.dischargedAt || Date.now()).getTime()
+      const left = new Date(a.visitDateTime || a.timestamp || a.dischargedAt || 0).getTime()
+      const right = new Date(b.visitDateTime || b.timestamp || b.dischargedAt || 0).getTime()
       return left - right
     })
   }, [filteredVisits])
@@ -196,7 +249,7 @@ export default function VisitHistoryPage({ onSignOut, onNavigate }) {
         return
       }
 
-      const groupKey = visitDate.toISOString().slice(0, 10)
+      const groupKey = toLocalDateKey(visit.visitDateTime || visit.timestamp)
       const group = grouped.get(groupKey) || []
       group.push(visit)
       grouped.set(groupKey, group)
@@ -205,8 +258,65 @@ export default function VisitHistoryPage({ onSignOut, onNavigate }) {
     return [...grouped.entries()]
   }, [orderedVisits])
 
+  const patientRecordLookup = useMemo(() => {
+    const byRecordId = new Map()
+    const byPatientRecordId = new Map()
+    const byName = new Map()
+
+    patientRecords.forEach((record) => {
+      const recordId = record.studentId || record.employeeId || ''
+      if (record.id) byPatientRecordId.set(String(record.id), record)
+      if (recordId) byRecordId.set(recordId, record)
+      if (record.name) byName.set(record.name.toLowerCase(), record)
+    })
+
+    return { byRecordId, byPatientRecordId, byName }
+  }, [patientRecords])
+
+  const getExportPatientDetails = useCallback(
+    (visit) => {
+      const visitRecordId = visit.studentId || visit.employeeId || ''
+      const record =
+        (visit.patientRecordId && patientRecordLookup.byPatientRecordId.get(String(visit.patientRecordId))) ||
+        (visitRecordId && patientRecordLookup.byRecordId.get(visitRecordId)) ||
+        (visit.name && patientRecordLookup.byName.get(visit.name.toLowerCase())) ||
+        {}
+
+      const position = visit.position || record.position || 'Student'
+      const isStudent = isStudentPosition(position)
+
+      return {
+        name: visit.name || record.name || 'Walk-in',
+        position,
+        id: visitRecordId || record.studentId || record.employeeId || '',
+        department: visit.department || record.department || '',
+        course: isStudent ? visit.course || record.course || '' : '',
+        yearLevel: isStudent ? visit.yearLevel || record.yearLevel || '' : '',
+        block: isStudent ? visit.section || record.section || '' : '',
+        contact: visit.contact || record.contact || '',
+        address: visit.address || record.address || '',
+      }
+    },
+    [patientRecordLookup]
+  )
+
   const handleExportHistory = useCallback(() => {
-    const columns = ['Date', 'Student', 'Concern', 'Time in', 'Medicine', 'Time out']
+const columns = [
+      'Date',
+      'Patient',
+      'Position',
+      'ID',
+      'Department',
+      'Course',
+      'Year Level',
+      'Block',
+      'Contact Number',
+      'Address',
+      'Concern',
+      'Time in',
+      'Medicine',
+      'Time out',
+    ]
 
     const workbookRows = groupedVisits.map(([groupKey, groupVisits]) => {
       const dateLabel = groupKey === 'Uncategorized'
@@ -220,19 +330,28 @@ export default function VisitHistoryPage({ onSignOut, onNavigate }) {
 
       const groupRows = groupVisits.map((visit) => {
         const medicineValue = (visit.medicines || []).join(' / ') || 'No medicine'
+        const patientDetails = getExportPatientDetails(visit)
         return `<tr>
-          <td>${groupKey === 'Uncategorized' ? 'Uncategorized' : groupKey}</td>
-          <td>${visit.name || 'Walk-in'}${visit.studentId ? ` (${visit.studentId})` : ''}</td>
-          <td>${visit.concern || 'General check-up'}</td>
-          <td>${formatVisitDate(visit.visitDateTime)}</td>
-          <td>${medicineValue}</td>
-          <td>${visit.dischargedAt ? formatVisitDate(visit.dischargedAt) : 'Not timed out'}</td>
+          <td>${escapeExcelCell(groupKey === 'Uncategorized' ? 'Uncategorized' : groupKey)}</td>
+          <td>${escapeExcelCell(patientDetails.name)}</td>
+          <td>${escapeExcelCell(patientDetails.position)}</td>
+          <td>${escapeExcelCell(patientDetails.id || 'No ID')}</td>
+          <td>${escapeExcelCell(patientDetails.department)}</td>
+          <td>${escapeExcelCell(patientDetails.course)}</td>
+          <td>${escapeExcelCell(patientDetails.yearLevel)}</td>
+          <td>${escapeExcelCell(patientDetails.block)}</td>
+          <td>${escapeExcelCell(patientDetails.contact)}</td>
+          <td>${escapeExcelCell(patientDetails.address)}</td>
+          <td>${escapeExcelCell(visit.concern || 'General check-up')}</td>
+          <td>${escapeExcelCell(formatVisitDate(visit.visitDateTime))}</td>
+          <td>${escapeExcelCell(medicineValue)}</td>
+          <td>${escapeExcelCell(visit.dischargedAt ? formatVisitDate(visit.dischargedAt) : 'Not timed out')}</td>
         </tr>`
       }).join('')
 
       return `<tr>
-        <td colspan="6" style="font-weight: bold; background: #eefaf2; color: #168c4a;">
-          ${dateLabel}
+        <td colspan="${columns.length}" style="font-weight: bold; background: #eefaf2; color: #168c4a;">
+          ${escapeExcelCell(dateLabel)}
         </td>
       </tr>
       ${groupRows}`
@@ -248,7 +367,7 @@ export default function VisitHistoryPage({ onSignOut, onNavigate }) {
   <table border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif;">
     <thead>
       <tr>
-        ${columns.map((column) => `<th style="background: #f6f8fc; color: #526582; text-transform: uppercase; font-size: 11px;">${column}</th>`).join('')}
+        ${columns.map((column) => `<th style="background: #f6f8fc; color: #526582; text-transform: uppercase; font-size: 11px;">${escapeExcelCell(column)}</th>`).join('')}
       </tr>
     </thead>
     <tbody>
@@ -272,7 +391,7 @@ export default function VisitHistoryPage({ onSignOut, onNavigate }) {
     URL.revokeObjectURL(url)
 
     setNotice('Visit history exported to Excel.')
-  }, [groupedVisits])
+  }, [getExportPatientDetails, groupedVisits])
 
   const getAvatarTone = useCallback((visit) => getStatusTone(visit), [])
 
@@ -292,9 +411,9 @@ export default function VisitHistoryPage({ onSignOut, onNavigate }) {
 
         <section className="hero-row">
           <div>
-            <p className="section-kicker">VISIT LOGS</p>
+<p className="section-kicker">VISIT LOGS</p>
             <h2>Visit History</h2>
-            <p>View and manage all student clinic visits.</p>
+            <p>View and manage all clinic visits.</p>
           </div>
           <div className="hero-actions">
             <button className="primary-action" onClick={handleExportHistory}>
@@ -317,7 +436,7 @@ export default function VisitHistoryPage({ onSignOut, onNavigate }) {
 
           {visits.length === 0 ? (
             <p className="empty-state" style={{ marginTop: '32px' }}>
-              No visits recorded yet. Go to <strong>Students</strong> to register a student visit.
+No visits recorded yet. Go to <strong>Students</strong> to register a clinic visit.
             </p>
           ) : filteredVisits.length === 0 ? (
             <p className="empty-state" style={{ marginTop: '32px' }}>
@@ -328,7 +447,6 @@ export default function VisitHistoryPage({ onSignOut, onNavigate }) {
               <table className="history-table">
                 <thead>
                   <tr>
-                    <th>Date</th>
                     <th>Student</th>
                     <th>Concern</th>
                     <th>Time in</th>
@@ -341,9 +459,9 @@ export default function VisitHistoryPage({ onSignOut, onNavigate }) {
                   {groupedVisits.map(([groupKey, groupVisits]) => (
                     <Fragment key={groupKey}>
                       <tr className="history-date-category">
-                        <td colSpan="7">
-                          <span className="date-category-label">
-                     x       <Icon name="calendar" /> {groupKey === 'Uncategorized' ? 'Uncategorized' : new Date(`${groupKey}T00:00:00`).toLocaleDateString('en-US', {
+                        <td colSpan="6">
+<span className="date-category-label">
+                          <Icon name="calendar" /> {groupKey === 'Uncategorized' ? 'Uncategorized' : new Date(`${groupKey}T00:00:00`).toLocaleDateString('en-US', {
                               weekday: 'long',
                               month: 'long',
                               day: 'numeric',
@@ -355,11 +473,6 @@ export default function VisitHistoryPage({ onSignOut, onNavigate }) {
 
                       {groupVisits.map((visit, index) => (
                         <tr key={`${visit.timestamp}-${index}`}>
-                          <td>{visit.visitDateTime ? new Date(visit.visitDateTime).toLocaleDateString('en-US', {
-                            month: 'short',
-                            day: 'numeric',
-                            year: 'numeric'
-                          }) : 'N/A'}</td>
                           <td>
                             <div className="history-student">
                               <span className={`visit-avatar ${getAvatarTone(visit)}`}>
@@ -368,7 +481,9 @@ export default function VisitHistoryPage({ onSignOut, onNavigate }) {
                               <div>
                                 <strong>{visit.name}</strong>
                                 <small>
-                                  {visit.studentId || 'No student ID'}
+                                  {visit.position ? `${visit.position} - ` : ''}
+                                  {visit.studentId || visit.employeeId || 'No ID'}
+                                  {visit.department ? ` - ${visit.department}` : ''}
                                   {visit.course ? ` - ${visit.course}` : ''}
                                 </small>
                               </div>
@@ -432,7 +547,7 @@ export default function VisitHistoryPage({ onSignOut, onNavigate }) {
             <p className="section-kicker">UPDATE VISIT</p>
             <h2>Update visit record</h2>
 
-            <form onSubmit={handleUpdateVisit} className="modal-form-grid">
+<form onSubmit={handleUpdateVisit} className="modal-form-grid">
               <label>
                 Full name *
                 <input
@@ -442,24 +557,145 @@ export default function VisitHistoryPage({ onSignOut, onNavigate }) {
                 />
               </label>
               <label>
-                Student ID
-                <input
-                  value={editVisit.studentId}
-                  onChange={(e) => setEditVisit((visit) => ({ ...visit, studentId: e.target.value }))}
-                />
+                Position
+                <select
+                  value={editVisit.position}
+                  onChange={(e) => {
+                    const position = e.target.value
+                    setEditVisit((visit) => ({
+                      ...visit,
+                      position,
+                      department: isDepartmentlessStaffPosition(position) ? '' : visit.department || '',
+                      employeeId: isStaffPosition(position) ? visit.employeeId : '',
+                      studentId: isStudentPosition(position) ? visit.studentId : '',
+                      course: isStudentPosition(position) ? visit.course : '',
+                      yearLevel: isStudentPosition(position) ? visit.yearLevel : '',
+                      section: isStudentPosition(position) ? visit.section : '',
+                    }))
+                  }}
+                >
+                  {positionOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
               </label>
-              <label>
-                Course
-                <input
-                  value={editVisit.course}
-                  onChange={(e) => setEditVisit((visit) => ({ ...visit, course: e.target.value }))}
-                />
-              </label>
+              {isStudentPosition(editVisit.position) && (
+                <label>
+                  Department
+                  <select
+                    value={editVisit.department}
+                    onChange={(e) => {
+                      const department = e.target.value
+                      setEditVisit((visit) => ({
+                        ...visit,
+                        department,
+                        course: departmentCourseOptions[department]?.some((option) => option.value === visit.course)
+                          ? visit.course
+                          : '',
+                        yearLevel: departmentCourseOptions[department]?.some((option) => option.value === visit.course)
+                          ? visit.yearLevel
+                          : '',
+                      }))
+                    }}
+                  >
+                    {departmentOptions.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {!isStudentPosition(editVisit.position) && !isDepartmentlessStaffPosition(editVisit.position) && (
+                <label>
+                  Department
+                  <select
+                    value={editVisit.department}
+                    onChange={(e) => setEditVisit((visit) => ({ ...visit, department: e.target.value }))}
+                  >
+                    {staffDepartmentOptions.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {isStudentPosition(editVisit.position) && (
+                <>
+                  <label>
+                    Course
+                    <select
+                      value={editVisit.course}
+                      onChange={(e) => {
+                        const course = e.target.value
+                        setEditVisit((visit) => ({
+                          ...visit,
+                          course,
+                          yearLevel:
+                            course === 'ACT' &&
+                            !twoYearCourseOptions.some((option) => option.value === visit.yearLevel)
+                              ? ''
+                              : visit.yearLevel,
+                        }))
+                      }}
+                    >
+                      {getCourseOptions(editVisit.department).map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Student ID
+                    <input
+                      value={editVisit.studentId}
+                      onChange={(e) => setEditVisit((visit) => ({ ...visit, studentId: e.target.value }))}
+                      placeholder="e.g. ICF-2024-001"
+                    />
+                  </label>
+                  <label>
+                    Year level
+                    <select
+                      value={editVisit.yearLevel}
+                      onChange={(e) => setEditVisit((visit) => ({ ...visit, yearLevel: e.target.value }))}
+                    >
+                      {getYearLevelOptions(editVisit.course).map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Block / Section
+                    <input
+                      value={editVisit.section}
+                      onChange={(e) => setEditVisit((visit) => ({ ...visit, section: e.target.value }))}
+                      placeholder="e.g. A"
+                    />
+                  </label>
+                </>
+              )}
+              {!isStudentPosition(editVisit.position) && (
+                <label>
+                  Employee ID
+                  <input
+                    value={editVisit.employeeId}
+                    onChange={(e) => setEditVisit((visit) => ({ ...visit, employeeId: e.target.value }))}
+                    placeholder="e.g. EMP-2024-001"
+                  />
+                </label>
+              )}
               <label>
                 Concern
                 <input
                   value={editVisit.concern}
                   onChange={(e) => setEditVisit((visit) => ({ ...visit, concern: e.target.value }))}
+                  placeholder="e.g. Headache, fever, stomach pain"
                 />
               </label>
               <label>

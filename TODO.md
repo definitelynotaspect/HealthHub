@@ -1,7 +1,14 @@
-# Task: Show only plus/minus logos on stock adjustment buttons
+# Manage Students Page — Patient Update Form Fix
 
-## Steps
-- [x] Read relevant files (MedicineInventoryPage.jsx, Icon.jsx, constants.js)
-- [x] Add a `minus` SVG icon to `src/components/Icon.jsx`
-- [x] Update stock adjustment buttons in `pages/MedicineInventoryPage.jsx` to show only icons (remove `-1`/`+1` text)
-- [x] Verify the changes
+## Task
+Make the patient update form on the Manage Students page complete and consistent with the Concern Page and Visit History pages. Support all staff positions (Admin, Instructor, Guard, Maintenance).
+
+## Plan
+- [x] 1. Add **Staff** to `positionOptions` array.
+- [x] 2. Update `isStaffPosition` helper to include `'Staff'` so all staff positions show the Employee ID field in both the register form and the update (detail) form.
+- [x] 3. Removed **Dean** from all pages (`ManageStudentsPage.jsx`, `ConcernPage.jsx`, `VisitHistoryPage.jsx`) per user request.
+- [x] 4. Removed **Staff** from all pages (`ManageStudentsPage.jsx`, `ConcernPage.jsx`, `VisitHistoryPage.jsx`) per user request.
+- [x] 5. Verify production build passes (`npm run build`).
+
+## Follow-up
+- Reload the app and test the update modal for staff patients (Admin, Instructor, Guard, Maintenance).
