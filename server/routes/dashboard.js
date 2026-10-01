@@ -15,9 +15,9 @@ router.get('/stats', async (req, res, next) => {
       ),
       pool.execute('SELECT COUNT(*) AS totalPatients, COUNT(DISTINCT course) AS totalCourses FROM patient_records'),
       pool.execute(
-        `SELECT concern AS label, COUNT(*) AS value
+        `SELECT COALESCE(NULLIF(signs_symptoms, ''), concern, 'General check-up') AS label, COUNT(*) AS value
          FROM visits
-         GROUP BY concern
+         GROUP BY COALESCE(NULLIF(signs_symptoms, ''), concern, 'General check-up')
          ORDER BY value DESC
          LIMIT 5`
       ),

@@ -1,4 +1,5 @@
 import Icon from './Icon'
+import { getVisitMajorComplaint } from '../utils/visitHelpers'
 
 export default function VisitList({ visits, onSelect, onUpdate }) {
   if (!visits.length) {
@@ -21,7 +22,7 @@ export default function VisitList({ visits, onSelect, onUpdate }) {
           <span className={`visit-avatar ${visit.tone}`}>{visit.initials}</span>
           <span className="visit-info">
             <strong>{visit.name}</strong>
-            <small>{visit.concern}</small>
+            <small>{getVisitMajorComplaint(visit)}</small>
           </span>
           <button
             className="visit-delete"

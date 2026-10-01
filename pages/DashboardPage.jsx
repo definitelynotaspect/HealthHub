@@ -1,11 +1,13 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { clinicApi } from '../src/api/clinicApi'
-import { formatVisitDate } from '../src/utils/visitHelpers'
+import { formatVisitDate, getVisitMajorComplaint } from '../src/utils/visitHelpers'
+import { getCachedArray, hasCachedArray, setCachedArray } from '../src/utils/clinicDataCache'
 import Sidebar from '../src/components/Sidebar'
 import Topbar from '../src/components/Topbar'
 import Toast from '../src/components/Toast'
 import Icon from '../src/components/Icon'
 import VisitBarChart from '../src/components/VisitBarChart'
+import ConfirmDialog from '../src/components/ConfirmDialog'
 
 function toMonthValue(date) {
   const year = date.getFullYear()
@@ -50,13 +52,23 @@ function getWeekOptions(monthValue) {
   })
 }
 
-export default function DashboardPage({ onSignOut, onNavigate }) {
+export default function DashboardPage({
+  onSignOut,
+  onNavigate,
+  onOpenAccountSettings,
+  mobileSidebarOpen,
+  onOpenMobileSidebar,
+  onCloseMobileSidebar,
+}) {
   const [activeNav, setActiveNav] = useState('Dashboard')
   const [notice, setNotice] = useState('')
   const [query, setQuery] = useState('')
   const [selectedMonth, setSelectedMonth] = useState(() => toMonthValue(new Date()))
   const [selectedWeek, setSelectedWeek] = useState(() => String(getWeekNumberForDate(new Date())))
-  const [visits, setVisits] = useState([])
+  const [visits, setVisits] = useState(() => getCachedArray('visits'))
+  const [visitsLoaded, setVisitsLoaded] = useState(() => hasCachedArray('visits'))
+  const [visitToDischarge, setVisitToDischarge] = useState(null)
+  const [isDischarging, setIsDischarging] = useState(false)
 
   useEffect(() => {
     let ignore = false
@@ -64,9 +76,14 @@ export default function DashboardPage({ onSignOut, onNavigate }) {
     async function loadVisits() {
       try {
         const { data } = await clinicApi.getVisits()
-        if (!ignore) setVisits(data)
+        if (!ignore) {
+          setVisits(setCachedArray('visits', data))
+          setVisitsLoaded(true)
+        }
       } catch (error) {
         if (!ignore) setNotice(error.message || 'Unable to load clinic visits.')
+      } finally {
+        if (!ignore) setVisitsLoaded(true)
       }
     }
 
@@ -87,11 +104,11 @@ export default function DashboardPage({ onSignOut, onNavigate }) {
     [visits]
   )
 
-  // Dynamically count concerns from actual visits
+  // Dynamically count major complaints from actual visits
   const concernCounts = useMemo(() => {
     const counts = {}
     visits.forEach((v) => {
-      const c = v.concern || 'General check-up'
+      const c = getVisitMajorComplaint(v)
       counts[c] = (counts[c] || 0) + 1
     })
     return counts
@@ -103,6 +120,32 @@ export default function DashboardPage({ onSignOut, onNavigate }) {
       .sort((a, b) => b[1] - a[1])
       .slice(0, 5)
   }, [concernCounts])
+
+  const concernTypeCount = useMemo(
+    () => Object.keys(concernCounts).length,
+    [concernCounts]
+  )
+
+  const dischargedToday = useMemo(() => {
+    const today = new Date()
+    const todayKey = [
+      today.getFullYear(),
+      String(today.getMonth() + 1).padStart(2, '0'),
+      String(today.getDate()).padStart(2, '0'),
+    ].join('-')
+
+    return dischargedVisits.filter((visit) => {
+      const dischargedAt = visit.dischargedAt
+      if (!dischargedAt) return false
+
+      const localDate = String(dischargedAt).match(/^(\d{4}-\d{2}-\d{2})/)
+      if (localDate) return localDate[1] === todayKey
+
+      const date = new Date(dischargedAt)
+      return !Number.isNaN(date.getTime())
+        && [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-') === todayKey
+    })
+  }, [dischargedVisits])
 
   // Colors for top concerns
   const concernColors = ['#e4342a', '#f1bc10', '#168c4a', '#1d4eb5', '#9b59b6']
@@ -134,30 +177,45 @@ export default function DashboardPage({ onSignOut, onNavigate }) {
   }, [onNavigate])
 
   // Discharge a student (mark them as left the clinic)
-  const handleDischarge = useCallback(async (visitToDischarge) => {
+  const handleDischarge = useCallback(async () => {
+    if (!visitToDischarge) return
+    setIsDischarging(true)
     try {
       const { data } = await clinicApi.dischargeVisit(visitToDischarge.id)
-      setVisits((current) =>
-        current.map((visit) => (visit.id === data.id ? data : visit))
-      )
+      setVisits((current) => {
+        const nextVisits = current.map((visit) => (visit.id === data.id ? data : visit))
+        setCachedArray('visits', nextVisits)
+        return nextVisits
+      })
       setNotice(`${visitToDischarge.name} has been discharged from the clinic.`)
+      setVisitToDischarge(null)
     } catch (error) {
       setNotice(error.message || 'Unable to discharge this visit.')
+    } finally {
+      setIsDischarging(false)
     }
-  }, [])
+  }, [visitToDischarge])
 
   const setNoticeSafe = useCallback((msg) => setNotice(msg), [])
 
   return (
     <div className="app-layout">
-      <Sidebar activeNav={activeNav} onNavSelect={handleNavSelect} onSignOut={onSignOut} />
+      <Sidebar
+        activeNav={activeNav}
+        onNavSelect={handleNavSelect}
+        onSignOut={onSignOut}
+        isOpen={mobileSidebarOpen}
+        onClose={onCloseMobileSidebar}
+      />
 
       <main className="main-content">
         <Topbar
           query={query}
           onQueryChange={setQuery}
           onNotification={setNoticeSafe}
-          onProfile={() => handleNavSelect('Nurse Profile')}
+          onProfile={onOpenAccountSettings}
+          onNavigate={onNavigate}
+          onMenuClick={onOpenMobileSidebar}
           showSearch={false}
         />
 
@@ -177,38 +235,38 @@ export default function DashboardPage({ onSignOut, onNavigate }) {
         {visits.length > 0 && (
           <>
             <section className="stats-grid" aria-label="Clinic statistics">
-              <div className="stat-card blue">
+              <button type="button" className="stat-card blue interactive-stat-card" onClick={() => handleNavSelect('Visit history')}>
                 <span className="stat-icon"><Icon name="students" /></span>
                 <div>
                   <strong>{visits.length}</strong>
                   <p>Total visits recorded</p>
                   <small>All time clinic visits</small>
                 </div>
-              </div>
-              <div className="stat-card yellow">
+              </button>
+              <button type="button" className="stat-card yellow interactive-stat-card" onClick={() => handleNavSelect('Visit history')}>
                 <span className="stat-icon"><Icon name="calendar" /></span>
                 <div>
                   <strong>{activeVisits.length}</strong>
                   <p>Currently in clinic</p>
                   <small>{activeVisits.length === 1 ? '1 student being attended' : `${activeVisits.length} students being attended`}</small>
                 </div>
-              </div>
-              <div className="stat-card red">
+              </button>
+              <button type="button" className="stat-card red interactive-stat-card" onClick={() => handleNavSelect('Concern Page')}>
                 <span className="stat-icon"><Icon name="heart" /></span>
                 <div>
-                  <strong>{topConcerns.length}</strong>
-                  <p>Unique concerns</p>
-                  <small>{topConcerns.length === 0 ? 'No concerns recorded' : `${topConcerns[0]?.[0] || 'N/A'} is most common`}</small>
+                  <strong>{concernTypeCount}</strong>
+                  <p>Unique complaints</p>
+                  <small>{topConcerns.length === 0 ? 'No complaints recorded' : `${topConcerns[0]?.[0] || 'N/A'} is most common`}</small>
                 </div>
-              </div>
-              <div className="stat-card green">
+              </button>
+              <button type="button" className="stat-card green interactive-stat-card" onClick={() => handleNavSelect('Visit history')}>
                 <span className="stat-icon"><Icon name="clipboard" /></span>
                 <div>
-                  <strong>{dischargedVisits.length}</strong>
+                  <strong>{dischargedToday.length}</strong>
                   <p>Discharged today</p>
-                  <small>{dischargedVisits.length === 1 ? '1 student discharged' : `${dischargedVisits.length} students discharged`}</small>
+                  <small>{dischargedToday.length === 1 ? '1 student discharged' : `${dischargedToday.length} students discharged`}</small>
                 </div>
-              </div>
+              </button>
             </section>
 
             {topConcerns.length > 0 && (
@@ -267,13 +325,20 @@ export default function DashboardPage({ onSignOut, onNavigate }) {
                 <div className="panel complaints-panel">
                   <div className="panel-heading">
                     <div>
-                      <p className="panel-label red-text"><Icon name="heart" /> COMMON CONCERNS</p>
+                      <p className="panel-label red-text"><Icon name="heart" /> COMMON COMPLAINTS</p>
                       <h3>Top complaints</h3>
                     </div>
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={() => handleNavSelect('Concern Page')}
+                    >
+                      View all <Icon name="arrow" />
+                    </button>
                   </div>
                   <div style={{ padding: '10px 0' }}>
                     {topConcerns.length === 0 ? (
-                      <p className="empty-state">No concerns recorded yet.</p>
+                      <p className="empty-state">No complaints recorded yet.</p>
                     ) : (
                       <>
                         <div
@@ -295,11 +360,17 @@ export default function DashboardPage({ onSignOut, onNavigate }) {
                           {topConcerns.map(([concern, count], i) => {
                             const total = topConcerns.reduce((s, [, c]) => s + c, 0)
                             return (
-                              <div key={concern}>
+                              <button
+                                type="button"
+                                key={concern}
+                                className="legend-item"
+                                onClick={() => handleNavSelect('Concern Page')}
+                                aria-label={`View ${concern} complaint records`}
+                              >
                                 <i style={{ background: concernColors[i % concernColors.length] }} />
                                 {concern}
                                 <b>{Math.round((count / total) * 100)}%</b>
-                              </div>
+                              </button>
                             )
                           })}
                         </div>
@@ -332,13 +403,13 @@ export default function DashboardPage({ onSignOut, onNavigate }) {
                         <span className="visit-info">
                           <strong>{visit.name}</strong>
                           <small>
-                            {visit.concern || 'General check-up'}
+                            {getVisitMajorComplaint(visit)}
                             {visit.course ? ` · ${visit.course}` : ''}
                           </small>
                         </span>
                         <button
                           className="discharge-button"
-                          onClick={() => handleDischarge(visit)}
+                          onClick={() => setVisitToDischarge(visit)}
                           title="Discharge student from clinic"
                         >
                           <Icon name="close" /> Time out
@@ -364,22 +435,25 @@ export default function DashboardPage({ onSignOut, onNavigate }) {
             </section>
 
             {/* Recently discharged section */}
-            {dischargedVisits.length > 0 && (
+            {dischargedToday.length > 0 && (
               <section className="panel" style={{ marginTop: '18px' }}>
                 <div className="panel-heading">
                   <div>
                     <p className="panel-label green-text"><Icon name="calendar" /> RECENTLY DISCHARGED</p>
-                    <h3>Discharged today ({dischargedVisits.length})</h3>
+                    <h3>Discharged today ({dischargedToday.length})</h3>
                   </div>
+                  <button className="text-button" onClick={() => handleNavSelect('Visit history')}>
+                    View history <Icon name="arrow" />
+                  </button>
                 </div>
                 <div className="visit-list">
-                  {dischargedVisits.slice(0, 5).map((visit) => (
+                  {dischargedToday.slice(0, 5).map((visit) => (
                     <div key={`${visit.name}-${visit.timestamp}`} className="visit discharged-visit">
                       <span className={`visit-avatar green`}>{visit.initials}</span>
                       <span className="visit-info">
                         <strong>{visit.name}</strong>
                         <small>
-                          {visit.concern || 'General check-up'}
+                          {getVisitMajorComplaint(visit)}
                           {visit.course ? ` · ${visit.course}` : ''}
                         </small>
                       </span>
@@ -394,7 +468,7 @@ export default function DashboardPage({ onSignOut, onNavigate }) {
           </>
         )}
 
-        {visits.length === 0 && (
+        {visits.length === 0 && visitsLoaded && (
           <section className="bottom-grid" style={{ marginTop: '24px' }}>
             <div className="panel">
               <div className="panel-heading">
@@ -423,6 +497,18 @@ export default function DashboardPage({ onSignOut, onNavigate }) {
           </section>
         )}
       </main>
+      {visitToDischarge && (
+        <ConfirmDialog
+          title="Time out student?"
+          description={`Mark ${visitToDischarge.name} as having left the clinic?`}
+          warning="The visit will remain in the history, but it will no longer appear as active."
+          confirmLabel="Time out"
+          loadingLabel="Timing out..."
+          loading={isDischarging}
+          onCancel={() => setVisitToDischarge(null)}
+          onConfirm={handleDischarge}
+        />
+      )}
     </div>
   )
 }

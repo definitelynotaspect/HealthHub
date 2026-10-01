@@ -5,7 +5,13 @@ import { requireAuth } from './middleware/auth.js'
 import authRoutes from './routes/auth.js'
 import dashboardRoutes from './routes/dashboard.js'
 import medicineRoutes from './routes/medicines.js'
+import { ensureAuthSchema } from './services/authSchemaService.js'
+import { ensureMedicineTransactionSchema } from './services/medicineTransactionService.js'
+import { ensureNotificationSchema } from './services/notificationService.js'
+import { ensurePatientImportSchema } from './services/patientImportService.js'
 import nurseProfileRoutes from './routes/nurseProfile.js'
+import { ensureGalleryTable } from './routes/nurseProfile.js'
+import notificationRoutes from './routes/notifications.js'
 import patientRecordRoutes from './routes/patientRecords.js'
 import visitRoutes from './routes/visits.js'
 
@@ -23,6 +29,15 @@ app.get('/api/health', async (req, res, next) => {
     await pool.query('SELECT 1')
     res.json({ ok: true, database: 'connected' })
   } catch (error) {
+    if (isDatabaseConnectionError(error)) {
+      res.status(503).json({
+        ok: false,
+        database: 'disconnected',
+        message: 'MySQL is not available. Please start MySQL in XAMPP and try again.',
+      })
+      return
+    }
+
     next(error)
   }
 })
@@ -34,10 +49,23 @@ app.use('/api/patients', requireAuth, patientRecordRoutes)
 app.use('/api/visits', requireAuth, visitRoutes)
 app.use('/api/medicines', requireAuth, medicineRoutes)
 app.use('/api/nurse-profile', requireAuth, nurseProfileRoutes)
+app.use('/api/notifications', requireAuth, notificationRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ message: 'API route not found.' })
 })
+
+function isDatabaseConnectionError(error) {
+  return [
+    'ECONNREFUSED',
+    'ECONNRESET',
+    'ETIMEDOUT',
+    'PROTOCOL_CONNECTION_LOST',
+    'ER_CON_COUNT_ERROR',
+    'POOL_CONNLIMIT',
+    'POOL_ENQUEUELIMIT',
+  ].includes(error?.code)
+}
 
 app.use((error, req, res, next) => {
   void next
@@ -58,6 +86,19 @@ app.use((error, req, res, next) => {
     })
   }
 
+  if (isDatabaseConnectionError(error)) {
+    console.error('MySQL connection error:', {
+      code: error.code,
+      message: error.message,
+    })
+
+    return res.status(503).json({
+      success: false,
+      message: 'MySQL is not available right now. Please check XAMPP MySQL and try again.',
+      errors: [],
+    })
+  }
+
   console.error(error)
   res.status(500).json({
     success: false,
@@ -66,6 +107,31 @@ app.use((error, req, res, next) => {
   })
 })
 
-app.listen(port, () => {
-  console.log(`Clinic API running at http://localhost:${port}`)
-})
+async function initializeDatabaseSchema() {
+  await ensureAuthSchema(pool)
+  await ensurePatientImportSchema()
+  await ensureMedicineTransactionSchema(pool)
+  await ensureNotificationSchema(pool)
+  await ensureGalleryTable()
+}
+
+initializeDatabaseSchema()
+  .then(() => {
+    const server = app.listen(port, () => {
+      console.log(`Clinic API running at http://localhost:${port}`)
+    })
+
+    server.on('error', (error) => {
+      if (error.code === 'EADDRINUSE') {
+        console.error(`Port ${port} is already in use. Stop the existing API process or set a different PORT in server/.env.`)
+      } else {
+        console.error('Failed to start the Clinic API.', error)
+      }
+
+      process.exitCode = 1
+    })
+  })
+  .catch((error) => {
+    console.error('Failed to initialize the MySQL schema. Start MySQL in XAMPP and run the SQL migrations before starting the API.', error)
+    process.exitCode = 1
+  })

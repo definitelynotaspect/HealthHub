@@ -99,6 +99,10 @@ export function toLocalDateKey(value) {
   ].join('-')
 }
 
+export function getVisitMajorComplaint(visit) {
+  return visit?.signsSymptoms || visit?.concern || 'General check-up'
+}
+
 /**
  * Generate a tone color for an avatar based on a course.
  * Mirrors the Students page behavior: hashes the course string

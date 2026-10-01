@@ -1,10 +1,12 @@
-import { useState, useMemo, useCallback, useEffect } from 'react'
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { clinicApi } from '../src/api/clinicApi'
+import { getCachedArray, hasCachedArray, setCachedArray } from '../src/utils/clinicDataCache'
 import Sidebar from '../src/components/Sidebar'
 import Topbar from '../src/components/Topbar'
 import Toast from '../src/components/Toast'
 import Icon from '../src/components/Icon'
-import { formatVisitDate, getInitials, getStatusTone, toLocalDateTimeInputValue } from '../src/utils/visitHelpers'
+import ConfirmDialog from '../src/components/ConfirmDialog'
+import { formatVisitDate, getInitials, getStatusTone, getVisitMajorComplaint, toLocalDateTimeInputValue } from '../src/utils/visitHelpers'
 
 const positionOptions = [
   { value: '', label: 'Select position' },
@@ -87,15 +89,28 @@ function isDepartmentlessStaffPosition(position) {
   return ['Staff', 'Guard', 'Maintenance'].includes(position)
 }
 
-export default function ConcernPage({ onSignOut, onNavigate }) {
+export default function ConcernPage({
+  onSignOut,
+  onNavigate,
+  onOpenAccountSettings,
+  mobileSidebarOpen,
+  onOpenMobileSidebar,
+  onCloseMobileSidebar,
+}) {
   const [activeNav, setActiveNav] = useState('Concern Page')
   const [notice, setNotice] = useState('')
   const [query, setQuery] = useState('')
-  const [selectedConcern, setSelectedConcern] = useState('')
+  const [selectedConcerns, setSelectedConcerns] = useState([])
+  const [concernFilterOpen, setConcernFilterOpen] = useState(false)
+  const [concernSearch, setConcernSearch] = useState('')
   const [selectedVisit, setSelectedVisit] = useState(null)
   const [editVisit, setEditVisit] = useState(null)
+  const [visitToDischarge, setVisitToDischarge] = useState(null)
+  const [isDischarging, setIsDischarging] = useState(false)
+  const concernFilterRef = useRef(null)
 
-  const [visits, setVisits] = useState([])
+  const [visits, setVisits] = useState(() => getCachedArray('visits'))
+  const [visitsLoaded, setVisitsLoaded] = useState(() => hasCachedArray('visits'))
 
   useEffect(() => {
     let ignore = false
@@ -103,9 +118,14 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
     async function loadVisits() {
       try {
         const { data } = await clinicApi.getVisits()
-        if (!ignore) setVisits(data)
+        if (!ignore) {
+          setVisits(setCachedArray('visits', data))
+          setVisitsLoaded(true)
+        }
       } catch (error) {
         if (!ignore) setNotice(error.message || 'Unable to load concerns.')
+      } finally {
+        if (!ignore) setVisitsLoaded(true)
       }
     }
 
@@ -125,15 +145,21 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
 
   const concerns = useMemo(() => {
     const unique = new Set()
-    visits.forEach((visit) => unique.add(visit.concern || 'General check-up'))
+    visits.forEach((visit) => unique.add(getVisitMajorComplaint(visit)))
     return Array.from(unique).sort((a, b) => a.localeCompare(b))
   }, [visits])
+
+  const visibleConcerns = useMemo(() => {
+    const q = concernSearch.trim().toLowerCase()
+    if (!q) return concerns
+    return concerns.filter((concern) => concern.toLowerCase().includes(q))
+  }, [concerns, concernSearch])
 
   const filteredVisits = useMemo(() => {
     const q = query.trim().toLowerCase()
     return visits.filter((visit) => {
-      const concern = visit.concern || 'General check-up'
-      const matchesConcern = !selectedConcern || concern === selectedConcern
+      const concern = getVisitMajorComplaint(visit)
+      const matchesConcern = selectedConcerns.length === 0 || selectedConcerns.includes(concern)
       const matchesQuery =
         !q ||
         [
@@ -153,7 +179,32 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
 
       return matchesConcern && matchesQuery
     })
-  }, [visits, query, selectedConcern])
+  }, [visits, query, selectedConcerns])
+
+  useEffect(() => {
+    setSelectedConcerns((current) => current.filter((concern) => concerns.includes(concern)))
+  }, [concerns])
+
+  useEffect(() => {
+    if (!concernFilterOpen) return undefined
+
+    function handlePointerDown(event) {
+      if (concernFilterRef.current && !concernFilterRef.current.contains(event.target)) {
+        setConcernFilterOpen(false)
+      }
+    }
+
+    function handleKeyDown(event) {
+      if (event.key === 'Escape') setConcernFilterOpen(false)
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [concernFilterOpen])
 
   const stats = useMemo(() => {
     const patientIds = new Set()
@@ -173,19 +224,27 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
   }, [visits, concerns])
 
   const handleDischarge = useCallback(
-    async (visit) => {
+    async () => {
+      if (!visitToDischarge) return
+
+      setIsDischarging(true)
       try {
-        const { data } = await clinicApi.dischargeVisit(visit.id)
-        setVisits((current) =>
-          current.map((item) => (item.id === data.id ? data : item))
-        )
+        const { data } = await clinicApi.dischargeVisit(visitToDischarge.id)
+        setVisits((current) => {
+          const nextVisits = current.map((item) => (item.id === data.id ? data : item))
+          setCachedArray('visits', nextVisits)
+          return nextVisits
+        })
         setSelectedVisit(null)
-        setNotice(`${visit.name} has been timed out from the clinic.`)
+        setNotice(`${visitToDischarge.name} has been timed out from the clinic.`)
+        setVisitToDischarge(null)
       } catch (error) {
         setNotice(error.message || 'Unable to time out this visit.')
+      } finally {
+        setIsDischarging(false)
       }
     },
-    []
+    [visitToDischarge]
   )
 
   const openUpdateVisit = useCallback((visit) => {
@@ -200,7 +259,8 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
       course: visit.course || '',
       yearLevel: visit.yearLevel || '',
       section: visit.section || '',
-      concern: visit.concern || 'General check-up',
+      concern: getVisitMajorComplaint(visit),
+      signsSymptoms: visit.signsSymptoms || getVisitMajorComplaint(visit),
       visitDateTime: toLocalDateTimeInputValue(visit.visitDateTime),
       dischargedAt: toLocalDateTimeInputValue(visit.dischargedAt),
     })
@@ -223,7 +283,8 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
         course: isStudent ? editVisit.course || '' : '',
         yearLevel: isStudent ? editVisit.yearLevel || '' : '',
         section: isStudent ? editVisit.section.trim() : '',
-        concern: editVisit.concern.trim() || 'General check-up',
+        concern: String(editVisit.signsSymptoms || '').trim() || 'General check-up',
+        signsSymptoms: String(editVisit.signsSymptoms || '').trim(),
         visitDateTime: editVisit.visitDateTime || selectedVisit.visitDateTime,
         dischargedAt: editVisit.dischargedAt || null,
         medicines: selectedVisit.medicines || [],
@@ -237,9 +298,11 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
 
       try {
         const { data } = await clinicApi.updateVisit(selectedVisit.id, nextVisit)
-        setVisits((current) =>
-          current.map((visit) => (visit.id === data.id ? data : visit))
-        )
+        setVisits((current) => {
+          const nextVisits = current.map((visit) => (visit.id === data.id ? data : visit))
+          setCachedArray('visits', nextVisits)
+          return nextVisits
+        })
         setSelectedVisit(null)
         setEditVisit(null)
         setNotice(`${data.name}'s concern has been updated.`)
@@ -253,16 +316,32 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
   const getAvatarTone = useCallback((visit) => getStatusTone(visit), [])
   const setNoticeSafe = useCallback((msg) => setNotice(msg), [])
 
+  const toggleConcernFilter = useCallback((concern) => {
+    setSelectedConcerns((current) =>
+      current.includes(concern)
+        ? current.filter((item) => item !== concern)
+        : [...current, concern]
+    )
+  }, [])
+
   return (
     <div className="app-layout">
-      <Sidebar activeNav={activeNav} onNavSelect={handleNavSelect} onSignOut={onSignOut} />
+      <Sidebar
+        activeNav={activeNav}
+        onNavSelect={handleNavSelect}
+        onSignOut={onSignOut}
+        isOpen={mobileSidebarOpen}
+        onClose={onCloseMobileSidebar}
+      />
 
       <main className="main-content">
         <Topbar
           query={query}
           onQueryChange={setQuery}
           onNotification={setNoticeSafe}
-          onProfile={() => handleNavSelect('Nurse Profile')}
+          onProfile={onOpenAccountSettings}
+          onNavigate={onNavigate}
+          onMenuClick={onOpenMobileSidebar}
         />
 
         <Toast message={notice} onClose={() => setNotice('')} />
@@ -316,24 +395,76 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
         )}
 
         {visits.length > 0 && (
-          <div className="history-filters">
-            <div className="segmented">
+          <div className="concern-filter-bar" ref={concernFilterRef}>
+            <button
+              type="button"
+              className="concern-filter-trigger"
+              onClick={() => setConcernFilterOpen((open) => !open)}
+              aria-expanded={concernFilterOpen}
+            >
+              <span><Icon name="search" /> Concern filter</span>
+              <strong>
+                {selectedConcerns.length === 0
+                  ? `All concerns (${visits.length})`
+                  : `${selectedConcerns.length} selected`}
+              </strong>
+            </button>
+
+            {selectedConcerns.length > 0 && (
               <button
-                className={selectedConcern === '' ? 'selected' : ''}
-                onClick={() => setSelectedConcern('')}
+                type="button"
+                className="concern-filter-clear"
+                onClick={() => setSelectedConcerns([])}
               >
-                All ({visits.length})
+                Clear
               </button>
-              {concerns.map((concern) => (
-                <button
-                  key={concern}
-                  className={selectedConcern === concern ? 'selected' : ''}
-                  onClick={() => setSelectedConcern(concern)}
-                >
-                  {concern}
-                </button>
-              ))}
-            </div>
+            )}
+
+            {concernFilterOpen && (
+              <div className="concern-filter-menu">
+                <label className="concern-filter-search">
+                  <Icon name="search" />
+                  <input
+                    value={concernSearch}
+                    onChange={(e) => setConcernSearch(e.target.value)}
+                    placeholder="Search concern types"
+                    autoFocus
+                  />
+                </label>
+
+                <div className="concern-filter-actions">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedConcerns(concerns)}
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedConcerns([])}
+                  >
+                    Clear
+                  </button>
+                </div>
+
+                <div className="concern-filter-options">
+                  {visibleConcerns.length === 0 ? (
+                    <p>No concern types found.</p>
+                  ) : (
+                    visibleConcerns.map((concern) => (
+                      <label key={concern} className="concern-filter-option">
+                        <input
+                          type="checkbox"
+                          checked={selectedConcerns.includes(concern)}
+                          onChange={() => toggleConcernFilter(concern)}
+                        />
+                        <span>{concern}</span>
+                      </label>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -342,14 +473,18 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
             <div>
               <p className="panel-label red-text"><Icon name="clipboard" /> CONCERN LIST</p>
               <h3>
-                {query || selectedConcern
+                {query || selectedConcerns.length > 0
                   ? `Filtered concerns (${filteredVisits.length})`
                   : `All patient concerns (${visits.length})`}
               </h3>
             </div>
           </div>
 
-          {visits.length === 0 ? (
+          {visits.length === 0 && !visitsLoaded ? (
+            <p className="empty-state" style={{ marginTop: '32px' }}>
+              Loading concerns...
+            </p>
+          ) : visits.length === 0 ? (
             <p className="empty-state" style={{ marginTop: '32px' }}>
               No concerns recorded yet. Go to <strong>Students</strong> to register a visit.
             </p>
@@ -363,7 +498,7 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
                 <thead>
                   <tr>
                     <th>Patient</th>
-                    <th>Concern</th>
+                    <th>Major Complaint</th>
                     <th>Visit date</th>
                     <th>Medicine</th>
                     <th>Status</th>
@@ -373,7 +508,7 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
                 <tbody>
                   {filteredVisits.map((visit, index) => (
                     <tr key={`${visit.timestamp}-${visit.studentId || visit.name}-${index}`}>
-                      <td>
+                      <td data-label="Patient">
                         <div className="concern-patient">
                           <span className={`visit-avatar ${getAvatarTone(visit)}`}>
                             {visit.initials || getInitials(visit.name)}
@@ -389,11 +524,11 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
                           </div>
                         </div>
                       </td>
-                      <td>
-                        <span className="concern-chip">{visit.concern || 'General check-up'}</span>
+                      <td data-label="Major Complaint">
+                        <span className="concern-chip">{getVisitMajorComplaint(visit)}</span>
                       </td>
-                      <td>{formatVisitDate(visit.visitDateTime)}</td>
-                      <td>
+                      <td data-label="Visit Date">{formatVisitDate(visit.visitDateTime)}</td>
+                      <td data-label="Medicine">
                         <div className="medicine-chip-list">
                           {(visit.medicines && visit.medicines.length > 0)
                             ? visit.medicines.map((medicine) => (
@@ -402,16 +537,16 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
                             : <span className="medicine-empty">No medicine</span>}
                         </div>
                       </td>
-                      <td>
+                      <td data-label="Status">
                         <span className={visit.dischargedAt ? 'status-pill done' : 'status-pill active'}>
                           {visit.dischargedAt ? 'Timed out' : 'Active'}
                         </span>
                       </td>
-                      <td>
+                      <td data-label="Actions">
                         <div className="table-actions">
                           <button onClick={() => openUpdateVisit(visit)}>Update</button>
                           {!visit.dischargedAt && (
-                            <button onClick={() => handleDischarge(visit)}>Time out</button>
+                            <button onClick={() => setVisitToDischarge(visit)}>Time out</button>
                           )}
                         </div>
                       </td>
@@ -595,10 +730,10 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
                 </label>
               )}
               <label>
-                Concern / Reason
+                Signs and symptoms / major complaint
                 <input
-                  value={editVisit.concern}
-                  onChange={(e) => setEditVisit((visit) => ({ ...visit, concern: e.target.value }))}
+                  value={editVisit.signsSymptoms}
+                  onChange={(e) => setEditVisit((visit) => ({ ...visit, signsSymptoms: e.target.value }))}
                   placeholder="e.g. Headache, fever, stomach pain"
                 />
               </label>
@@ -624,6 +759,19 @@ export default function ConcernPage({ onSignOut, onNavigate }) {
             </form>
           </div>
         </div>
+      )}
+
+      {visitToDischarge && (
+        <ConfirmDialog
+          title="Time out patient?"
+          description={`Mark ${visitToDischarge.name} as having left the clinic?`}
+          warning="The visit will remain in the history, but it will no longer appear as active."
+          confirmLabel="Time out"
+          loadingLabel="Timing out..."
+          loading={isDischarging}
+          onCancel={() => setVisitToDischarge(null)}
+          onConfirm={handleDischarge}
+        />
       )}
     </div>
   )

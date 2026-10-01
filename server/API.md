@@ -12,12 +12,9 @@ This backend mirrors the React frontend data model and is now the source of trut
 6. Run `npm run server`.
 7. In another terminal, run `npm run dev`.
 
-If you already imported an older schema before `medicines.category` existed, run `server/migrations/001_add_medicine_category.sql` once.
+If you already imported an older schema, run any applicable files in `server/migrations/` once, including `006_create_medicine_transactions.sql` for medicine audit history.
 
-Default login:
-
-- Email: `interworldcolleges@clinic.com`
-- Password: `password123`
+Create the first clinic account with `ADMIN_EMAIL`, `ADMIN_PASSWORD`, and `ADMIN_FULL_NAME` in `server/.env`, then run `npm run seed:admin`. The password is hashed before it is stored.
 
 ## Tables
 
@@ -35,7 +32,12 @@ All endpoints except `POST /api/auth/login` and `GET /api/health` require `Autho
 ### Auth
 
 - `POST /api/auth/login`
+- `POST /api/auth/logout`
 - `GET /api/auth/me`
+- `PUT /api/auth/change-password`
+- `PUT /api/auth/change-email`
+- `POST /api/auth/forgot-password`
+- `POST /api/auth/reset-password`
 
 ### Dashboard
 
@@ -64,6 +66,7 @@ All endpoints except `POST /api/auth/login` and `GET /api/health` require `Autho
 ### Medicines
 
 - `GET /api/medicines?q=search`
+- `GET /api/medicines/transactions`
 - `POST /api/medicines`
 - `PUT /api/medicines/:id`
 - `PATCH /api/medicines/:id/adjust` with `{ "delta": 1 }` or `{ "delta": -1 }`

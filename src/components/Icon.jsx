@@ -31,6 +31,17 @@ const svgIcons = {
       <line x1="5" y1="12" x2="19" y2="12" />
     </svg>
   ),
+  sun: (
+    <svg className="svg-icon theme-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" focusable="false">
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2.2M12 19.8V22M4.93 4.93l1.56 1.56M17.51 17.51l1.56 1.56M2 12h2.2M19.8 12H22M4.93 19.07l1.56-1.56M17.51 6.49l1.56-1.56" />
+    </svg>
+  ),
+  moon: (
+    <svg className="svg-icon theme-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" focusable="false">
+      <path d="M20.4 14.4A8 8 0 0 1 9.6 3.6 8.6 8.6 0 1 0 20.4 14.4Z" />
+    </svg>
+  ),
 }
 
 export default function Icon({ name, className = '' }) {

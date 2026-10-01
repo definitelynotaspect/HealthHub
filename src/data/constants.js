@@ -5,6 +5,7 @@ export const icons = {
   history: '\u25F7',
   calendar: '\u25A3',
   search: '\u2315',
+  menu: '\u2630',
   bell: '\u2667',
   plus: '+',
   arrow: '\u2192',
@@ -25,6 +26,7 @@ export const navItems = [
   ['Concern Page', 'clipboard'],
   ['Visit history', 'history'],
   ['Medicine Inventory', 'inventory'],
+  ['Notifications', 'bell'],
 ]
 
 const medicineColors = [
@@ -110,10 +112,6 @@ export const defaultMedicineInventory = [
   description: medicineDescriptions[name] || '',
   category: medicineCategories[name] || 'General medicine',
 }))
-
-// Demo credentials
-export const DEMO_EMAIL = 'interworldcolleges@clinic.com'
-export const DEMO_PASSWORD = 'password123'
 
 // Default form state for new visits
 export const emptyVisitForm = {

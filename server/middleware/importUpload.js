@@ -3,27 +3,30 @@ import path from 'node:path'
 import fs from 'node:fs/promises'
 import multer from 'multer'
 
-const allowedExtensions = new Set(['.csv', '.xlsx', '.xls'])
-const allowedMimeTypes = new Set([
+const spreadsheetExtensions = ['.csv', '.xlsx', '.xls']
+const spreadsheetMimeTypes = [
   'text/csv',
   'application/csv',
   'application/vnd.ms-excel',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'application/octet-stream',
-])
+]
 
-export function createImportUpload(resourceName) {
+export function createImportUpload(resourceName, options = {}) {
+  const allowedExtensions = new Set(options.extensions || spreadsheetExtensions)
+  const allowedMimeTypes = new Set(options.mimeTypes || spreadsheetMimeTypes)
+  const allowedDescription = options.description || '.csv, .xlsx, and .xls files'
   const uploadDir = path.join(os.tmpdir(), `icf-healthhub-${resourceName}-imports`)
   const upload = multer({
     dest: uploadDir,
-    limits: { fileSize: 8 * 1024 * 1024, files: 1 },
+    limits: { fileSize: options.fileSize || 8 * 1024 * 1024, files: options.files || 1 },
     fileFilter(req, file, cb) {
       void req
       const ext = path.extname(file.originalname).toLowerCase()
       const mimeType = String(file.mimetype || '').toLowerCase()
 
       if (!allowedExtensions.has(ext)) {
-        cb(new Error('Only .csv, .xlsx, and .xls files can be imported.'))
+        cb(new Error(`Only ${allowedDescription} can be imported.`))
         return
       }
 
@@ -48,7 +51,9 @@ export function createImportUpload(resourceName) {
       return
     }
 
-    upload.single('file')(req, res, (error) => {
+    const uploadHandler = (options.files || 1) > 1 ? upload.array('files', options.files) : upload.single('file')
+
+    uploadHandler(req, res, (error) => {
       if (error) {
         res.status(400).json({
           success: false,

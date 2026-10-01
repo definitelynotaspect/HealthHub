@@ -1,10 +1,12 @@
 import { Fragment, useState, useMemo, useCallback, useEffect } from 'react'
 import { clinicApi } from '../src/api/clinicApi'
+import { getCachedArray, hasCachedArray, setCachedArray } from '../src/utils/clinicDataCache'
 import Sidebar from '../src/components/Sidebar'
 import Topbar from '../src/components/Topbar'
 import Toast from '../src/components/Toast'
 import Icon from '../src/components/Icon'
-import { formatVisitDate, getInitials, getStatusTone, toLocalDateKey, toLocalDateTimeInputValue } from '../src/utils/visitHelpers'
+import ConfirmDialog from '../src/components/ConfirmDialog'
+import { formatVisitDate, getInitials, getStatusTone, getVisitMajorComplaint, toLocalDateKey, toLocalDateTimeInputValue } from '../src/utils/visitHelpers'
 
 const positionOptions = [
   { value: '', label: 'Select position' },
@@ -96,15 +98,29 @@ function escapeExcelCell(value) {
     .replace(/'/g, '&#39;')
 }
 
-export default function VisitHistoryPage({ onSignOut, onNavigate }) {
+export default function VisitHistoryPage({
+  onSignOut,
+  onNavigate,
+  onOpenAccountSettings,
+  mobileSidebarOpen,
+  onOpenMobileSidebar,
+  onCloseMobileSidebar,
+}) {
   const [activeNav, setActiveNav] = useState('Visit history')
   const [notice, setNotice] = useState('')
+  const [deleteVisit, setDeleteVisit] = useState(null)
+  const [isDeletingVisit, setIsDeletingVisit] = useState(false)
   const [query, setQuery] = useState('')
   const [selectedVisit, setSelectedVisit] = useState(null)
   const [editVisit, setEditVisit] = useState(null)
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
 
-  const [visits, setVisits] = useState([])
-  const [patientRecords, setPatientRecords] = useState([])
+  const [visits, setVisits] = useState(() => getCachedArray('visits'))
+  const [patientRecords, setPatientRecords] = useState(() => getCachedArray('patientRecords'))
+  const [clinicDataLoaded, setClinicDataLoaded] = useState(
+    () => hasCachedArray('visits') && hasCachedArray('patientRecords')
+  )
 
   useEffect(() => {
     let ignore = false
@@ -116,11 +132,14 @@ export default function VisitHistoryPage({ onSignOut, onNavigate }) {
           clinicApi.getPatientRecords(),
         ])
         if (!ignore) {
-          setVisits(visitsResponse.data)
-          setPatientRecords(recordsResponse.data)
+          setVisits(setCachedArray('visits', visitsResponse.data))
+          setPatientRecords(setCachedArray('patientRecords', recordsResponse.data))
+          setClinicDataLoaded(true)
         }
       } catch (error) {
         if (!ignore) setNotice(error.message || 'Unable to load visit history.')
+      } finally {
+        if (!ignore) setClinicDataLoaded(true)
       }
     }
 
@@ -152,24 +171,31 @@ setEditVisit({
       course: visit.course || '',
       yearLevel: visit.yearLevel || '',
       section: visit.section || '',
-      concern: visit.concern || 'General check-up',
+      concern: getVisitMajorComplaint(visit),
+      signsSymptoms: visit.signsSymptoms || getVisitMajorComplaint(visit),
       visitDateTime: toLocalDateTimeInputValue(visit.visitDateTime),
       dischargedAt: toLocalDateTimeInputValue(visit.dischargedAt),
     })
   }, [])
 
-  const handleDeleteVisit = useCallback(async (visitToDelete) => {
-    const confirmed = window.confirm('Are you sure you want to remove this record?')
-    if (!confirmed) return
-
+  const handleDeleteVisit = useCallback(async () => {
+    if (!deleteVisit) return
     try {
-      await clinicApi.deleteVisit(visitToDelete.id, { deleteOrphanPatient: true })
-      setVisits((current) => current.filter((visit) => visit.id !== visitToDelete.id))
-      setNotice(`${visitToDelete.name}'s visit record has been removed.`)
+      setIsDeletingVisit(true)
+      await clinicApi.deleteVisit(deleteVisit.id, { deleteOrphanPatient: true })
+      setVisits((current) => {
+        const nextVisits = current.filter((visit) => visit.id !== deleteVisit.id)
+        setCachedArray('visits', nextVisits)
+        return nextVisits
+      })
+      setDeleteVisit(null)
+      setNotice(`${deleteVisit.name}'s visit record has been removed.`)
     } catch (error) {
       setNotice(error.message || 'Unable to remove this visit.')
+    } finally {
+      setIsDeletingVisit(false)
     }
-  }, [])
+  }, [deleteVisit])
 
   const handleUpdateVisit = useCallback(
     async (e) => {
@@ -188,7 +214,8 @@ const position = editVisit.position || 'Student'
         course: isStudent ? editVisit.course || '' : '',
         yearLevel: isStudent ? editVisit.yearLevel || '' : '',
         section: isStudent ? editVisit.section.trim() : '',
-        concern: editVisit.concern.trim() || 'General check-up',
+        concern: String(editVisit.signsSymptoms || '').trim() || 'General check-up',
+        signsSymptoms: String(editVisit.signsSymptoms || '').trim(),
         visitDateTime: editVisit.visitDateTime || selectedVisit.visitDateTime,
         dischargedAt: editVisit.dischargedAt || null,
         initials: getInitials(editVisit.name.trim()),
@@ -204,9 +231,11 @@ const position = editVisit.position || 'Student'
           ...nextVisit,
           medicines: selectedVisit.medicines || [],
         })
-        setVisits((current) =>
-          current.map((visit) => (visit.id === data.id ? data : visit))
-        )
+        setVisits((current) => {
+          const nextVisits = current.map((visit) => (visit.id === data.id ? data : visit))
+          setCachedArray('visits', nextVisits)
+          return nextVisits
+        })
         setSelectedVisit(null)
         setEditVisit(null)
         setNotice(`${data.name}'s visit record has been updated.`)
@@ -218,15 +247,29 @@ const position = editVisit.position || 'Student'
   )
 
   const filteredVisits = useMemo(() => {
-    if (!query.trim()) return visits
-
     const q = query.toLowerCase()
-return visits.filter((visit) =>
-      [visit.name, visit.studentId, visit.employeeId, visit.position, visit.department, visit.course, visit.concern, ...(visit.medicines || [])]
+    const hasSearch = Boolean(query.trim())
+
+    return visits.filter((visit) => {
+      const visitDateKey = toLocalDateKey(visit.visitDateTime || visit.timestamp || visit.dischargedAt)
+      const matchesDateFrom = !dateFrom || (visitDateKey && visitDateKey >= dateFrom)
+      const matchesDateTo = !dateTo || (visitDateKey && visitDateKey <= dateTo)
+
+      if (!matchesDateFrom || !matchesDateTo) return false
+      if (!hasSearch) return true
+
+      return [visit.name, visit.studentId, visit.employeeId, visit.position, visit.department, visit.course, getVisitMajorComplaint(visit), ...(visit.medicines || [])]
         .filter(Boolean)
-        .some((value) => value.toLowerCase().includes(q))
-    )
-  }, [visits, query])
+        .some((value) => String(value).toLowerCase().includes(q))
+    })
+  }, [visits, query, dateFrom, dateTo])
+
+  const hasDateFilter = Boolean(dateFrom || dateTo)
+
+  const clearDateFilter = useCallback(() => {
+    setDateFrom('')
+    setDateTo('')
+  }, [])
 
   const orderedVisits = useMemo(() => {
     return [...filteredVisits].sort((a, b) => {
@@ -284,17 +327,50 @@ return visits.filter((visit) =>
 
       const position = visit.position || record.position || 'Student'
       const isStudent = isStudentPosition(position)
+      const firstAvailable = (...values) => values.find((value) => value !== null && value !== undefined && String(value).trim() !== '') || ''
 
       return {
-        name: visit.name || record.name || 'Walk-in',
+        name: firstAvailable(visit.name, record.name, 'Walk-in'),
+        lastName: firstAvailable(record.lastName, visit.lastName),
+        firstName: firstAvailable(record.firstName, visit.firstName),
+        middleName: firstAvailable(record.middleName, visit.middleName),
         position,
-        id: visitRecordId || record.studentId || record.employeeId || '',
-        department: visit.department || record.department || '',
-        course: isStudent ? visit.course || record.course || '' : '',
-        yearLevel: isStudent ? visit.yearLevel || record.yearLevel || '' : '',
-        block: isStudent ? visit.section || record.section || '' : '',
-        contact: visit.contact || record.contact || '',
-        address: visit.address || record.address || '',
+        studentId: firstAvailable(visit.studentId, record.studentId),
+        employeeId: firstAvailable(visit.employeeId, record.employeeId),
+        department: firstAvailable(visit.department, record.department),
+        course: isStudent ? firstAvailable(visit.course, record.course) : '',
+        yearLevel: isStudent ? firstAvailable(visit.yearLevel, record.yearLevel) : '',
+        section: isStudent ? firstAvailable(visit.section, record.section) : '',
+        birthdate: firstAvailable(record.birthdate, visit.birthdate),
+        placeOfBirth: firstAvailable(record.placeOfBirth, visit.placeOfBirth),
+        gender: firstAvailable(record.gender, visit.gender),
+        bloodType: firstAvailable(record.bloodType, visit.bloodType),
+        address: firstAvailable(visit.address, record.address),
+        contact: firstAvailable(visit.contact, record.contact),
+        email: firstAvailable(record.email, visit.email),
+        fatherName: firstAvailable(record.fatherName, visit.fatherName),
+        fatherOccupation: firstAvailable(record.fatherOccupation, visit.fatherOccupation),
+        motherName: firstAvailable(record.motherName, visit.motherName),
+        motherOccupation: firstAvailable(record.motherOccupation, visit.motherOccupation),
+        emergencyContactName: firstAvailable(record.emergencyContactName, visit.emergencyContactName),
+        emergencyContactPhone: firstAvailable(record.emergencyContactPhone, visit.emergencyContactPhone),
+        emergencyContactName2: firstAvailable(record.emergencyContactName2, visit.emergencyContactName2),
+        emergencyContactPhone2: firstAvailable(record.emergencyContactPhone2, visit.emergencyContactPhone2),
+        completeImmunization: firstAvailable(record.completeImmunization, visit.completeImmunization),
+        missedImmunization: firstAvailable(record.missedImmunization, visit.missedImmunization),
+        medicalCondition: firstAvailable(record.medicalCondition, visit.medicalCondition),
+        medicalConditionDetails: firstAvailable(record.medicalConditionDetails, visit.medicalConditionDetails),
+        hospitalized: firstAvailable(record.hospitalized, visit.hospitalized),
+        hospitalizationDetails: firstAvailable(record.hospitalizationDetails, visit.hospitalizationDetails),
+        allergy: firstAvailable(record.allergy, visit.allergy),
+        allergyDetails: firstAvailable(record.allergyDetails, visit.allergyDetails),
+        covidVaccination: firstAvailable(record.covidVaccination, visit.covidVaccination),
+        healthConditions: Array.isArray(record.healthConditions) ? record.healthConditions.join(', ') : firstAvailable(record.healthConditions, visit.healthConditions),
+        surgery: firstAvailable(record.surgery, visit.surgery),
+        surgeryDetails: firstAvailable(record.surgeryDetails, visit.surgeryDetails),
+        maintenanceMedication: firstAvailable(record.maintenanceMedication, visit.maintenanceMedication),
+        maintenanceMedications: firstAvailable(record.maintenanceMedications, visit.maintenanceMedications),
+        signatureName: firstAvailable(record.signatureName, visit.signatureName),
       }
     },
     [patientRecordLookup]
@@ -304,18 +380,61 @@ return visits.filter((visit) =>
 const columns = [
       'Date',
       'Patient',
+      'Last Name',
+      'First Name',
+      'Middle Name',
       'Position',
-      'ID',
+      'Student ID',
+      'Employee ID',
       'Department',
       'Course',
       'Year Level',
-      'Block',
+      'Section',
+      'Date of Birth',
+      'Place of Birth',
+      'Gender',
+      'Blood Type',
       'Contact Number',
       'Address',
-      'Concern',
-      'Time in',
-      'Medicine',
-      'Time out',
+      'Email',
+      "Father's Name",
+      "Father's Occupation",
+      "Mother's Name",
+      "Mother's Occupation",
+      'Emergency Contact Person',
+      'Emergency Contact Number',
+      'Emergency Contact Person 2',
+      'Emergency Contact Number 2',
+      'Complete Immunization',
+      'Missed Immunization',
+      'Medical Condition Affecting Emergency Treatment',
+      'Medical Condition Details',
+      'Hospitalized',
+      'Hospitalization Details',
+      'Allergy',
+      'Allergy Cause(s)',
+      'COVID Vaccination',
+      'Pre-existing Conditions',
+      'Any Surgery',
+      'Surgery Details',
+      'Taking Medication / Maintenance',
+      'All Medications',
+      'Signature over Printed Name',
+      'Visit Date',
+      'Temp',
+      'HT',
+      'WT',
+      'BP',
+      'RR',
+      'PR',
+      'O2 Sat (%)',
+      'Signs / Major Complaint',
+      'Clinic Remarks',
+      'Signs and Symptoms Remarks',
+      'Medication / First Aid',
+      'Medication Remarks',
+      'Sent Home',
+      'Attending Physician',
     ]
 
     const workbookRows = groupedVisits.map(([groupKey, groupVisits]) => {
@@ -334,18 +453,61 @@ const columns = [
         return `<tr>
           <td>${escapeExcelCell(groupKey === 'Uncategorized' ? 'Uncategorized' : groupKey)}</td>
           <td>${escapeExcelCell(patientDetails.name)}</td>
+          <td>${escapeExcelCell(patientDetails.lastName)}</td>
+          <td>${escapeExcelCell(patientDetails.firstName)}</td>
+          <td>${escapeExcelCell(patientDetails.middleName)}</td>
           <td>${escapeExcelCell(patientDetails.position)}</td>
-          <td>${escapeExcelCell(patientDetails.id || 'No ID')}</td>
+          <td>${escapeExcelCell(patientDetails.studentId)}</td>
+          <td>${escapeExcelCell(patientDetails.employeeId)}</td>
           <td>${escapeExcelCell(patientDetails.department)}</td>
           <td>${escapeExcelCell(patientDetails.course)}</td>
           <td>${escapeExcelCell(patientDetails.yearLevel)}</td>
-          <td>${escapeExcelCell(patientDetails.block)}</td>
+          <td>${escapeExcelCell(patientDetails.section)}</td>
+          <td>${escapeExcelCell(patientDetails.birthdate)}</td>
+          <td>${escapeExcelCell(patientDetails.placeOfBirth)}</td>
+          <td>${escapeExcelCell(patientDetails.gender)}</td>
+          <td>${escapeExcelCell(patientDetails.bloodType)}</td>
           <td>${escapeExcelCell(patientDetails.contact)}</td>
           <td>${escapeExcelCell(patientDetails.address)}</td>
-          <td>${escapeExcelCell(visit.concern || 'General check-up')}</td>
+          <td>${escapeExcelCell(patientDetails.email)}</td>
+          <td>${escapeExcelCell(patientDetails.fatherName)}</td>
+          <td>${escapeExcelCell(patientDetails.fatherOccupation)}</td>
+          <td>${escapeExcelCell(patientDetails.motherName)}</td>
+          <td>${escapeExcelCell(patientDetails.motherOccupation)}</td>
+          <td>${escapeExcelCell(patientDetails.emergencyContactName)}</td>
+          <td>${escapeExcelCell(patientDetails.emergencyContactPhone)}</td>
+          <td>${escapeExcelCell(patientDetails.emergencyContactName2)}</td>
+          <td>${escapeExcelCell(patientDetails.emergencyContactPhone2)}</td>
+          <td>${escapeExcelCell(patientDetails.completeImmunization)}</td>
+          <td>${escapeExcelCell(patientDetails.missedImmunization)}</td>
+          <td>${escapeExcelCell(patientDetails.medicalCondition)}</td>
+          <td>${escapeExcelCell(patientDetails.medicalConditionDetails)}</td>
+          <td>${escapeExcelCell(patientDetails.hospitalized)}</td>
+          <td>${escapeExcelCell(patientDetails.hospitalizationDetails)}</td>
+          <td>${escapeExcelCell(patientDetails.allergy)}</td>
+          <td>${escapeExcelCell(patientDetails.allergyDetails)}</td>
+          <td>${escapeExcelCell(patientDetails.covidVaccination)}</td>
+          <td>${escapeExcelCell(patientDetails.healthConditions)}</td>
+          <td>${escapeExcelCell(patientDetails.surgery)}</td>
+          <td>${escapeExcelCell(patientDetails.surgeryDetails)}</td>
+          <td>${escapeExcelCell(patientDetails.maintenanceMedication)}</td>
+          <td>${escapeExcelCell(patientDetails.maintenanceMedications)}</td>
+          <td>${escapeExcelCell(patientDetails.signatureName)}</td>
           <td>${escapeExcelCell(formatVisitDate(visit.visitDateTime))}</td>
-          <td>${escapeExcelCell(medicineValue)}</td>
-          <td>${escapeExcelCell(visit.dischargedAt ? formatVisitDate(visit.dischargedAt) : 'Not timed out')}</td>
+          <td>${escapeExcelCell(visit.temperature)}</td>
+          <td>${escapeExcelCell(visit.height)}</td>
+          <td>${escapeExcelCell(visit.weight)}</td>
+          <td>${escapeExcelCell(visit.bloodPressure)}</td>
+          <td>${escapeExcelCell(visit.respiratoryRate)}</td>
+          <td>${escapeExcelCell(visit.pulseRate)}</td>
+          <td>${escapeExcelCell(visit.oxygenSaturation)}</td>
+          <td>${escapeExcelCell(getVisitMajorComplaint(visit))}</td>
+          <td>${escapeExcelCell(visit.clinicVisitRemarks)}</td>
+          <td>${escapeExcelCell(visit.visitRemarks)}</td>
+          <td>${escapeExcelCell(visit.medicationFirstAid || medicineValue)}</td>
+          <td>${escapeExcelCell(visit.medicationRemarks)}</td>
+          <td>${escapeExcelCell(visit.sentHome ? (visit.dischargedAt ? formatVisitDate(visit.dischargedAt) : 'Yes') : 'No')}</td>
+          <td>${escapeExcelCell(visit.attendingPhysician)}</td>
         </tr>`
       }).join('')
 
@@ -397,14 +559,22 @@ const columns = [
 
   return (
     <div className="app-layout">
-      <Sidebar activeNav={activeNav} onNavSelect={handleNavSelect} onSignOut={onSignOut} />
+      <Sidebar
+        activeNav={activeNav}
+        onNavSelect={handleNavSelect}
+        onSignOut={onSignOut}
+        isOpen={mobileSidebarOpen}
+        onClose={onCloseMobileSidebar}
+      />
 
       <main className="main-content">
         <Topbar
           query={query}
           onQueryChange={setQuery}
           onNotification={setNoticeSafe}
-          onProfile={() => handleNavSelect('Nurse Profile')}
+          onProfile={onOpenAccountSettings}
+          onNavigate={onNavigate}
+          onMenuClick={onOpenMobileSidebar}
         />
 
         <Toast message={notice} onClose={() => setNotice('')} />
@@ -427,20 +597,55 @@ const columns = [
             <div>
               <p className="panel-label green-text"><Icon name="calendar" /> VISIT RECORDS</p>
               <h3>
-                {query
+                {query || hasDateFilter
                   ? `Filtered (${filteredVisits.length})`
                   : `All visits (${visits.length})`}
               </h3>
             </div>
           </div>
 
-          {visits.length === 0 ? (
+          <div className="history-date-filter" aria-label="Filter visit records by date range">
+            <div className="history-date-filter-heading">
+              <span><Icon name="calendar" /> Date range</span>
+              {hasDateFilter && (
+                <button type="button" onClick={clearDateFilter}>
+                  Clear
+                </button>
+              )}
+            </div>
+            <div className="history-date-fields">
+              <label>
+                From
+                <input
+                  type="date"
+                  value={dateFrom}
+                  max={dateTo || undefined}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                />
+              </label>
+              <label>
+                To
+                <input
+                  type="date"
+                  value={dateTo}
+                  min={dateFrom || undefined}
+                  onChange={(e) => setDateTo(e.target.value)}
+                />
+              </label>
+            </div>
+          </div>
+
+          {visits.length === 0 && !clinicDataLoaded ? (
+            <p className="empty-state" style={{ marginTop: '32px' }}>
+              Loading visit history...
+            </p>
+          ) : visits.length === 0 ? (
             <p className="empty-state" style={{ marginTop: '32px' }}>
 No visits recorded yet. Go to <strong>Students</strong> to register a clinic visit.
             </p>
           ) : filteredVisits.length === 0 ? (
             <p className="empty-state" style={{ marginTop: '32px' }}>
-              No visits match your search criteria.
+              No visits match your search or date filter.
             </p>
           ) : (
             <div className="history-table-wrap">
@@ -448,7 +653,7 @@ No visits recorded yet. Go to <strong>Students</strong> to register a clinic vis
                 <thead>
                   <tr>
                     <th>Student</th>
-                    <th>Concern</th>
+                    <th>Major Complaint</th>
                     <th>Time in</th>
                     <th>Medicine</th>
                     <th>Time out</th>
@@ -473,7 +678,7 @@ No visits recorded yet. Go to <strong>Students</strong> to register a clinic vis
 
                       {groupVisits.map((visit, index) => (
                         <tr key={`${visit.timestamp}-${index}`}>
-                          <td>
+                          <td data-label="Student">
                             <div className="history-student">
                               <span className={`visit-avatar ${getAvatarTone(visit)}`}>
                                 {visit.initials || getInitials(visit.name)}
@@ -489,11 +694,11 @@ No visits recorded yet. Go to <strong>Students</strong> to register a clinic vis
                               </div>
                             </div>
                           </td>
-                          <td>
-                            <span className="concern-chip">{visit.concern || 'General check-up'}</span>
+                          <td data-label="Major Complaint">
+                            <span className="concern-chip">{getVisitMajorComplaint(visit)}</span>
                           </td>
-                          <td>{formatVisitDate(visit.visitDateTime)}</td>
-                          <td>
+                          <td data-label="Time in">{formatVisitDate(visit.visitDateTime)}</td>
+                          <td data-label="Medicine">
                             <div className="medicine-chip-list">
                               {(visit.medicines && visit.medicines.length > 0)
                                 ? visit.medicines.map((medicine) => (
@@ -502,8 +707,8 @@ No visits recorded yet. Go to <strong>Students</strong> to register a clinic vis
                                 : <span className="medicine-empty">No medicine</span>}
                             </div>
                           </td>
-                          <td>{visit.dischargedAt ? formatVisitDate(visit.dischargedAt) : 'Not timed out'}</td>
-                          <td>
+                          <td data-label="Time out">{visit.dischargedAt ? formatVisitDate(visit.dischargedAt) : 'Not timed out'}</td>
+                          <td data-label="Actions">
                             <div className="history-actions">
                               <button
                                 className="history-delete"
@@ -514,7 +719,7 @@ No visits recorded yet. Go to <strong>Students</strong> to register a clinic vis
                               </button>
                               <button
                                 className="history-delete danger"
-                                onClick={() => handleDeleteVisit(visit)}
+                                onClick={() => setDeleteVisit(visit)}
                                 title="Remove visit record"
                               >
                                 <Icon name="close" /> Delete
@@ -691,10 +896,10 @@ No visits recorded yet. Go to <strong>Students</strong> to register a clinic vis
                 </label>
               )}
               <label>
-                Concern
+                Signs and symptoms / major complaint
                 <input
-                  value={editVisit.concern}
-                  onChange={(e) => setEditVisit((visit) => ({ ...visit, concern: e.target.value }))}
+                  value={editVisit.signsSymptoms}
+                  onChange={(e) => setEditVisit((visit) => ({ ...visit, signsSymptoms: e.target.value }))}
                   placeholder="e.g. Headache, fever, stomach pain"
                 />
               </label>
@@ -720,6 +925,15 @@ No visits recorded yet. Go to <strong>Students</strong> to register a clinic vis
             </form>
           </div>
         </div>
+      )}
+      {deleteVisit && (
+        <ConfirmDialog
+          title="Delete Visit Record?"
+          description={`Are you sure you want to remove ${deleteVisit.name || 'this patient'}'s visit record?`}
+          onCancel={() => setDeleteVisit(null)}
+          onConfirm={handleDeleteVisit}
+          loading={isDeletingVisit}
+        />
       )}
     </div>
   )

@@ -9,11 +9,16 @@ CREATE TABLE IF NOT EXISTS users (
   email VARCHAR(191) NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
   full_name VARCHAR(191) NOT NULL,
-  role ENUM('nurse', 'admin') NOT NULL DEFAULT 'nurse',
+  role ENUM('nurse', 'admin', 'clinic_admin') NOT NULL DEFAULT 'clinic_admin',
+  token_version INT UNSIGNED NOT NULL DEFAULT 0,
+  password_reset_token_hash CHAR(64) NULL,
+  password_reset_expires_at DATETIME NULL,
+  password_reset_used_at DATETIME NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY users_email_unique (email)
+  UNIQUE KEY users_email_unique (email),
+  KEY users_password_reset_token_index (password_reset_token_hash)
 );
 
 CREATE TABLE IF NOT EXISTS patient_records (
@@ -21,6 +26,9 @@ CREATE TABLE IF NOT EXISTS patient_records (
   student_id VARCHAR(80) NULL,
   employee_id VARCHAR(80) NULL,
   name VARCHAR(191) NOT NULL,
+  last_name VARCHAR(191) NULL,
+  first_name VARCHAR(191) NULL,
+  middle_name VARCHAR(191) NULL,
   position VARCHAR(50) NOT NULL DEFAULT 'Student',
   department VARCHAR(191) NULL,
   course VARCHAR(80) NULL,
@@ -33,6 +41,7 @@ CREATE TABLE IF NOT EXISTS patient_records (
   father_occupation VARCHAR(191) NULL,
   mother_name VARCHAR(191) NULL,
   mother_occupation VARCHAR(191) NULL,
+  email VARCHAR(191) NULL,
   contact VARCHAR(80) NULL,
   address VARCHAR(255) NULL,
   emergency_contact_name VARCHAR(191) NULL,
@@ -82,6 +91,22 @@ CREATE TABLE IF NOT EXISTS medicines (
   UNIQUE KEY medicines_name_unique (name)
 );
 
+CREATE TABLE IF NOT EXISTS medicine_transactions (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  medicine_id INT UNSIGNED NULL,
+  medicine_name VARCHAR(191) NOT NULL,
+  action VARCHAR(40) NOT NULL,
+  quantity INT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY medicine_transactions_medicine_index (medicine_id),
+  KEY medicine_transactions_created_index (created_at),
+  CONSTRAINT medicine_transactions_medicine_fk
+    FOREIGN KEY (medicine_id)
+    REFERENCES medicines (id)
+    ON DELETE SET NULL
+);
+
 CREATE TABLE IF NOT EXISTS visits (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT,
   patient_record_id INT UNSIGNED NULL,
@@ -102,6 +127,7 @@ CREATE TABLE IF NOT EXISTS visits (
   pulse_rate VARCHAR(40) NULL,
   oxygen_saturation VARCHAR(40) NULL,
   signs_symptoms TEXT NULL,
+  clinic_visit_remarks TEXT NULL,
   visit_remarks TEXT NULL,
   medication_first_aid TEXT NULL,
   medication_remarks TEXT NULL,
@@ -111,11 +137,15 @@ CREATE TABLE IF NOT EXISTS visits (
   sent_home_date DATE NULL,
   sent_home_time TIME NULL,
   attending_physician VARCHAR(191) NULL,
+  client_submission_key VARCHAR(191) NULL,
+  sent_home_email_sent_at DATETIME NULL,
+  sent_home_email_error TEXT NULL,
   timestamp BIGINT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY visits_patient_record_index (patient_record_id),
+  UNIQUE KEY visits_client_submission_unique (client_submission_key),
   KEY visits_concern_index (concern),
   KEY visits_datetime_index (visit_datetime),
   CONSTRAINT visits_patient_record_fk
@@ -129,6 +159,7 @@ CREATE TABLE IF NOT EXISTS visit_medicines (
   visit_id INT UNSIGNED NOT NULL,
   medicine_id INT UNSIGNED NULL,
   medicine_name VARCHAR(191) NOT NULL,
+  quantity INT UNSIGNED NOT NULL DEFAULT 1,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY visit_medicines_visit_index (visit_id),
@@ -140,6 +171,28 @@ CREATE TABLE IF NOT EXISTS visit_medicines (
   CONSTRAINT visit_medicines_medicine_fk
     FOREIGN KEY (medicine_id)
     REFERENCES medicines (id)
+    ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id INT UNSIGNED NULL,
+  type VARCHAR(60) NOT NULL,
+  title VARCHAR(191) NOT NULL,
+  message TEXT NOT NULL,
+  is_read TINYINT(1) NOT NULL DEFAULT 0,
+  related_id INT UNSIGNED NULL,
+  related_type VARCHAR(80) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  read_at DATETIME NULL,
+  PRIMARY KEY (id),
+  KEY notifications_user_created_index (user_id, created_at),
+  KEY notifications_user_read_index (user_id, is_read),
+  KEY notifications_type_index (type),
+  KEY notifications_related_index (related_type, related_id),
+  CONSTRAINT notifications_user_fk
+    FOREIGN KEY (user_id)
+    REFERENCES users (id)
     ON DELETE SET NULL
 );
 
@@ -155,6 +208,7 @@ CREATE TABLE IF NOT EXISTS nurse_profiles (
   department VARCHAR(191) NULL,
   assigned_room VARCHAR(191) NULL,
   license VARCHAR(80) NULL,
+  profile_image LONGTEXT NULL,
   status VARCHAR(50) NOT NULL DEFAULT 'On duty',
   duties_json JSON NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -200,21 +254,10 @@ CREATE TABLE IF NOT EXISTS import_history (
     ON DELETE SET NULL
 );
 
-INSERT INTO users (email, password_hash, full_name, role)
-VALUES (
-  'interworldcolleges@clinic.com',
-  '$2a$10$v1TkMiLzGA0lfxOXQPvA3.IIR0B2ku6lNGcYlB4hgCcwDmSSAgHn2',
-  'Curt Cuvin Gamurot',
-  'nurse'
-)
-ON DUPLICATE KEY UPDATE
-  full_name = VALUES(full_name),
-  role = VALUES(role);
-
 INSERT INTO nurse_profiles
   (user_id, full_name, role, email, contact, employee_id, shift, department, assigned_room, license, status, duties_json)
 SELECT
-  u.id,
+  NULL,
   'Curt Cuvin Gamurot',
   'Clinic Nurse',
   'curtcuvingamurot0@gmail.com',
@@ -233,9 +276,7 @@ SELECT
     'Monitor students recovering inside the clinic.',
     'Coordinate referrals and follow-up care when needed.'
   )
-FROM users u
-WHERE u.email = 'interworldcolleges@clinic.com'
-  AND NOT EXISTS (SELECT 1 FROM nurse_profiles);
+WHERE NOT EXISTS (SELECT 1 FROM nurse_profiles);
 
 INSERT INTO medicines (name, quantity, description, category) VALUES
   ('Neozep', 0, 'Commonly used for cold symptoms such as stuffy nose, runny nose, sneezing, headache, and fever.', 'Colds and fever'),

@@ -79,10 +79,10 @@ export default function NewVisitModal({ form, onFormChange, onClose, onSubmit })
         </div>
 
         <label>
-          Concern/Reason for Visit
+          Signs and symptoms / major complaint
           <input
-            value={form.concern}
-            onChange={(e) => handleChange('concern', e.target.value)}
+            value={form.signsSymptoms || ''}
+            onChange={(e) => handleChange('signsSymptoms', e.target.value)}
             placeholder="e.g. Headache, fever, stomach pain"
           />
         </label>

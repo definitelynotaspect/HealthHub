@@ -4,12 +4,29 @@ import { createImportUpload } from '../middleware/importUpload.js'
 import {
   confirmPatientImport,
   ensurePatientImportSchema,
+  previewPatientDocumentImport,
   previewPatientImport,
 } from '../services/patientImportService.js'
-import { mapPatient, toMysqlDate, toMysqlDateTime, toNullableString } from '../utils/format.js'
+import { mapPatient, normalizeDepartment, toMysqlDate, toMysqlDateTime, toNullableString } from '../utils/format.js'
 
 const router = express.Router()
 const importUpload = createImportUpload('patient-records')
+const documentImportUpload = createImportUpload('patient-document', {
+  extensions: ['.doc', '.docx', '.html', '.htm', '.jpg', '.jpeg', '.png', '.webp', '.bmp'],
+  mimeTypes: [
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'text/html',
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'image/bmp',
+    'application/octet-stream',
+  ],
+  description: '.doc, .docx, .jpg, .jpeg, .png, .webp, .bmp, .html, and .htm files',
+  fileSize: 12 * 1024 * 1024,
+  files: 2,
+})
 
 function toNullableBoolean(value) {
   if (value === '' || value === null || value === undefined) return null
@@ -28,8 +45,11 @@ function patientPayload(body) {
     studentId: isStudent ? toNullableString(body.studentId) : null,
     employeeId: !isStudent ? toNullableString(body.employeeId) : null,
     name: toNullableString(body.name),
+    lastName: toNullableString(body.lastName),
+    firstName: toNullableString(body.firstName),
+    middleName: toNullableString(body.middleName),
     position,
-    department: toNullableString(body.department),
+    department: toNullableString(normalizeDepartment(body.department, isStudent ? body.course : '')),
     course: isStudent ? toNullableString(body.course) : null,
     yearLevel: isStudent ? toNullableString(body.yearLevel) : null,
     section: isStudent ? toNullableString(body.section) : null,
@@ -40,6 +60,7 @@ function patientPayload(body) {
     fatherOccupation: toNullableString(body.fatherOccupation),
     motherName: toNullableString(body.motherName),
     motherOccupation: toNullableString(body.motherOccupation),
+    email: toNullableString(body.email),
     contact: toNullableString(body.contact),
     address: toNullableString(body.address),
     emergencyContactName: toNullableString(body.emergencyContactName),
@@ -76,7 +97,7 @@ async function getPatientById(id, connection = pool) {
 }
 
 function hasManagePermission(user) {
-  return ['nurse', 'admin'].includes(user?.role)
+  return ['nurse', 'admin', 'clinic_admin'].includes(String(user?.role || '').toLowerCase())
 }
 
 function requireManagePermission(req, res, next) {
@@ -121,6 +142,46 @@ router.post('/import/preview', requireManagePermission, importUpload, async (req
       success: result.errors.length === 0,
       message: result.errors.length ? 'Import validation failed.' : 'Import preview generated.',
       data: result,
+      errors: result.errors,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.post('/import/document', requireManagePermission, documentImportUpload, async (req, res, next) => {
+  try {
+    const files = req.files || (req.file ? [req.file] : [])
+    if (!files.length) {
+      res.status(400).json({
+        success: false,
+        message: 'Please upload one or two document or image files.',
+        errors: [],
+      })
+      return
+    }
+
+    const preview = await previewPatientDocumentImport(files)
+    if (!preview.rows.some((row) => ['Valid', 'Update', 'Duplicate'].includes(row.status))) {
+      res.status(400).json({
+        success: false,
+        message: 'No importable patient data was found in this file.',
+        data: preview,
+        errors: preview.errors,
+      })
+      return
+    }
+
+    const result = await confirmPatientImport(preview.rows, {
+      userId: req.user?.id,
+      fileName: files.map((file) => file.originalname).join(', '),
+    })
+
+    res.status(201).json({
+      success: true,
+      message: 'Document import completed successfully.',
+      data: result,
+      summary: result.summary,
       errors: result.errors,
     })
   } catch (error) {
@@ -175,19 +236,22 @@ router.post('/', async (req, res, next) => {
 
     const [result] = await pool.execute(
       `INSERT INTO patient_records
-       (student_id, employee_id, name, position, department, course, year_level, section,
+       (student_id, employee_id, name, last_name, first_name, middle_name, position, department, course, year_level, section,
         birthdate, gender, place_of_birth, father_name, father_occupation, mother_name,
-        mother_occupation, contact, address, emergency_contact_name, emergency_contact_phone,
+        mother_occupation, email, contact, address, emergency_contact_name, emergency_contact_phone,
         emergency_contact_name_2, emergency_contact_phone_2, blood_type, complete_immunization,
         missed_immunization, medical_condition, medical_condition_details, hospitalized,
         hospitalization_details, allergy, allergy_details, covid_vaccination, covid_first_dose,
         covid_second_dose, covid_booster_1, covid_booster_2, health_conditions_json, surgery,
         surgery_details, maintenance_medication, maintenance_medications, signature_name, registered_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         payload.studentId,
         payload.employeeId,
         payload.name,
+        payload.lastName,
+        payload.firstName,
+        payload.middleName,
         payload.position,
         payload.department,
         payload.course,
@@ -200,6 +264,7 @@ router.post('/', async (req, res, next) => {
         payload.fatherOccupation,
         payload.motherName,
         payload.motherOccupation,
+        payload.email,
         payload.contact,
         payload.address,
         payload.emergencyContactName,
@@ -246,9 +311,9 @@ router.put('/:id', async (req, res, next) => {
       await connection.execute(
         `UPDATE patient_records
          SET student_id = ?, employee_id = ?, name = ?, position = ?, department = ?,
-             course = ?, year_level = ?, section = ?, birthdate = ?, gender = ?,
+             last_name = ?, first_name = ?, middle_name = ?, course = ?, year_level = ?, section = ?, birthdate = ?, gender = ?,
              place_of_birth = ?, father_name = ?, father_occupation = ?, mother_name = ?,
-             mother_occupation = ?, contact = ?, address = ?, emergency_contact_name = ?,
+             mother_occupation = ?, email = ?, contact = ?, address = ?, emergency_contact_name = ?,
              emergency_contact_phone = ?, emergency_contact_name_2 = ?, emergency_contact_phone_2 = ?,
              blood_type = ?, complete_immunization = ?, missed_immunization = ?,
              medical_condition = ?, medical_condition_details = ?, hospitalized = ?,
@@ -263,6 +328,9 @@ router.put('/:id', async (req, res, next) => {
           payload.name,
           payload.position,
           payload.department,
+          payload.lastName,
+          payload.firstName,
+          payload.middleName,
           payload.course,
           payload.yearLevel,
           payload.section,
@@ -273,6 +341,7 @@ router.put('/:id', async (req, res, next) => {
           payload.fatherOccupation,
           payload.motherName,
           payload.motherOccupation,
+          payload.email,
           payload.contact,
           payload.address,
           payload.emergencyContactName,

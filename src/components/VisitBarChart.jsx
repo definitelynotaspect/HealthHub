@@ -85,11 +85,11 @@ export default function VisitBarChart({ visits, monthValue, weekNumber }) {
           return (
             <line
               key={frac}
+              className="visit-bar-chart-grid"
               x1={0}
               x2={width}
               y1={y}
               y2={y}
-              stroke="#e9eef6"
               strokeWidth="1"
             />
           )
@@ -102,23 +102,22 @@ export default function VisitBarChart({ visits, monthValue, weekNumber }) {
           return (
             <g key={day.dateStr}>
               <rect
+                className="visit-bar-chart-bar"
                 x={x}
                 y={y}
                 width={barWidth}
                 height={h}
                 rx="4"
                 ry="4"
-                fill="#1d4eb5"
-                opacity="0.85"
               >
                 <title>{day.count} visit{day.count !== 1 ? 's' : ''} on {day.fullDate}</title>
               </rect>
               {day.count > 0 && (
                 <text
+                  className="visit-bar-chart-value"
                   x={x + barWidth / 2}
                   y={y - 6}
                   textAnchor="middle"
-                  fill="#112c61"
                   fontSize="11"
                   fontWeight="700"
                   fontFamily="DM Sans, Arial, sans-serif"
@@ -127,10 +126,10 @@ export default function VisitBarChart({ visits, monthValue, weekNumber }) {
                 </text>
               )}
               <text
+                className="visit-bar-chart-label"
                 x={x + barWidth / 2}
                 y={height + 14}
                 textAnchor="middle"
-                fill="#8795ac"
                 fontSize="10"
                 fontFamily="DM Sans, Arial, sans-serif"
               >

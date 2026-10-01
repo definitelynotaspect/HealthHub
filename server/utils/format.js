@@ -3,6 +3,27 @@ export function toNullableString(value) {
   return trimmed || null
 }
 
+const departmentByCourse = {
+  ACT: 'College of Information and Computer Studies',
+  BSCS: 'College of Information and Computer Studies',
+  BEED: 'College of Education',
+  BSED: 'College of Education',
+  BSA: 'College of Business and Accountancy',
+  BSBA: 'College of Business and Accountancy',
+  BSCRIM: 'College of Criminal Justice Education',
+  BPA: 'College of Public Administration',
+  BSPA: 'College of Public Administration',
+  BSTM: 'College of Hospitality and Tourism Management',
+}
+
+// Some older records saved the course abbreviation in the department column.
+// Keep the course untouched while returning and saving the corresponding college.
+export function normalizeDepartment(department, course = '') {
+  const value = String(department ?? '').trim()
+  const mappedDepartment = departmentByCourse[String(course ?? '').trim().toUpperCase()]
+  return mappedDepartment && value.toUpperCase() in departmentByCourse ? mappedDepartment : value
+}
+
 function padDatePart(value) {
   return String(value).padStart(2, '0')
 }
@@ -110,8 +131,11 @@ export function mapPatient(row) {
     studentId: row.student_id || '',
     employeeId: row.employee_id || '',
     name: row.name || '',
+    lastName: row.last_name || '',
+    firstName: row.first_name || '',
+    middleName: row.middle_name || '',
     position: row.position || 'Student',
-    department: row.department || '',
+    department: normalizeDepartment(row.department, row.course),
     course: row.course || '',
     yearLevel: row.year_level || '',
     section: row.section || '',
@@ -122,6 +146,7 @@ export function mapPatient(row) {
     fatherOccupation: row.father_occupation || '',
     motherName: row.mother_name || '',
     motherOccupation: row.mother_occupation || '',
+    email: row.email || '',
     contact: row.contact || '',
     address: row.address || '',
     emergencyContactName: row.emergency_contact_name || '',
@@ -160,6 +185,8 @@ export function mapMedicine(row) {
     name: row.name,
     quantity: Number(row.quantity) || 0,
     image: row.image || '',
+    hasImage: Boolean(row.has_image ?? row.image),
+    imageLoaded: Boolean(row.image),
     description: row.description || '',
     category: row.category || 'General medicine',
     createdAt: fromMysqlDateTime(row.created_at),
@@ -167,10 +194,31 @@ export function mapMedicine(row) {
   }
 }
 
+function cleanVisitMedicineName(value) {
+  return String(value ?? '')
+    .replace(/^(?:\/?\s*)?(?:medication\s*\/?\s*)?first\s*aid\s*provided\s*(?:remarks)?\s*/i, '')
+    .replace(/^remarks\s*/i, '')
+    .trim()
+}
+
+function normalizeVisitMedicineList(value) {
+  return String(value ?? '')
+    .split(/\s*(?:\|\||\/|,|\r?\n)\s*/)
+    .map((item) => {
+      const value = cleanVisitMedicineName(item)
+      const quantityMatch = value.match(/^(.*?)::(\d+)$/)
+      if (!quantityMatch) return value
+
+      const name = quantityMatch[1].trim()
+      const quantity = Math.max(1, Number(quantityMatch[2]) || 1)
+      return quantity > 1 ? `${name} x${quantity}` : name
+    })
+    .filter(Boolean)
+}
+
 export function mapVisit(row) {
-  const medicines = row.medicines
-    ? String(row.medicines).split('||').filter(Boolean)
-    : []
+  const medicines = normalizeVisitMedicineList(row.medicines || row.medication_first_aid)
+  const majorComplaint = row.signs_symptoms || row.concern || 'General check-up'
 
   return {
     id: row.id,
@@ -178,13 +226,13 @@ export function mapVisit(row) {
     initials: getInitials(row.name),
     name: row.name || '',
     position: row.position || 'Student',
-    department: row.department || '',
+    department: normalizeDepartment(row.department, row.course),
     studentId: row.student_id || '',
     employeeId: row.employee_id || '',
     course: row.course || '',
     yearLevel: row.year_level || '',
     section: row.section || '',
-    concern: row.concern || 'General check-up',
+    concern: majorComplaint,
     temperature: row.temperature || '',
     height: row.height || '',
     weight: row.weight || '',
@@ -193,6 +241,7 @@ export function mapVisit(row) {
     pulseRate: row.pulse_rate || '',
     oxygenSaturation: row.oxygen_saturation || '',
     signsSymptoms: row.signs_symptoms || '',
+    clinicVisitRemarks: row.clinic_visit_remarks || '',
     visitRemarks: row.visit_remarks || '',
     medicationFirstAid: row.medication_first_aid || '',
     medicationRemarks: row.medication_remarks || '',
@@ -203,6 +252,8 @@ export function mapVisit(row) {
     sentHomeDate: fromMysqlDate(row.sent_home_date),
     sentHomeTime: row.sent_home_time || '',
     attendingPhysician: row.attending_physician || '',
+    sentHomeEmailSentAt: fromMysqlDateTime(row.sent_home_email_sent_at),
+    sentHomeEmailError: row.sent_home_email_error || '',
     timestamp: row.timestamp ? Number(row.timestamp) : new Date(row.visit_datetime || row.created_at).getTime(),
     tone: row.discharged_at ? 'green' : 'red',
     createdAt: fromMysqlDateTime(row.created_at),
